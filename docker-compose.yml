@@ -1,0 +1,18 @@
+services:
+  # 富途网关 - 注意:官方未提供 docker 镜像,需要在宿主机另启或用 wine
+  # 推荐方案:在服务器宿主机直接 install FutuOpenD (Linux 版),容器通过 host.docker.internal 访问
+  # 若需容器化,见 docs/futuopend.md
+  
+  app:
+    build: .
+    container_name: stockwatch
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    environment:
+      - FUTU_HOST=host.docker.internal  # 连宿主机的 FutuOpenD
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

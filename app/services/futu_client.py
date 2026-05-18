@@ -28,7 +28,7 @@ class FutuClient:
         if OpenQuoteContext is None:
             raise RuntimeError("futu-api not installed")
         if self.ctx is None:
-            self.ctx = OpenQuoteContext(host=config.FUTU_HOST, port=config.FUTU_PORT)
+            self.ctx = OpenQuoteContext(host=config.FUTU_HOST, port=config.FUTU_PORT, is_async_connect=True)
             log.info(f"Connected to FutuOpenD at {config.FUTU_HOST}:{config.FUTU_PORT}")
 
     def close(self):

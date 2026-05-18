@@ -1,0 +1,278 @@
+"""NiceGUI 看板 - 总览/持仓/新闻/信号"""
+from datetime import datetime, timedelta
+from nicegui import ui, app as nicegui_app
+from sqlalchemy import desc
+from app.db.models import get_session, Position, PriceSnapshot, Signal, News
+from app.services.futu_client import futu
+from app.jobs.price_scanner import scan_once
+from app.jobs.news_scraper import fetch_for_symbol
+
+
+def _latest_price(s, symbol):
+    row = (s.query(PriceSnapshot).filter_by(symbol=symbol)
+           .order_by(desc(PriceSnapshot.timestamp)).first())
+    return row
+
+
+def render_header():
+    with ui.header(elevated=True).classes("bg-slate-800 text-white"):
+        ui.label("📈 StockWatch").classes("text-xl font-bold")
+        ui.space()
+        ui.link("总览", "/").classes("text-white mx-2")
+        ui.link("持仓", "/positions").classes("text-white mx-2")
+        ui.link("新闻", "/news").classes("text-white mx-2")
+        ui.link("信号", "/signals").classes("text-white mx-2")
+
+
+# ────────── 总览 ──────────
+@ui.page("/")
+def dashboard():
+    render_header()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("📊 总览").classes("text-2xl font-bold")
+
+        stats_row = ui.row().classes("gap-4 w-full")
+
+        def refresh():
+            stats_row.clear()
+            s = get_session()
+            try:
+                positions = s.query(Position).all()
+                total_cost = sum(p.cost_price * p.quantity for p in positions)
+                total_mv = 0.0
+                signals_24h = (s.query(Signal)
+                               .filter(Signal.created_at >= datetime.utcnow() - timedelta(hours=24))
+                               .filter(Signal.action != "HOLD").count())
+                for p in positions:
+                    lp = _latest_price(s, p.symbol)
+                    if lp:
+                        total_mv += lp.price * p.quantity
+                pnl = total_mv - total_cost
+                pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0
+
+                def card(title, value, color="slate"):
+                    with stats_row:
+                        with ui.card().classes(f"flex-1 bg-{color}-50"):
+                            ui.label(title).classes("text-sm text-slate-600")
+                            ui.label(value).classes("text-2xl font-bold")
+
+                card("持仓数", f"{len(positions)}")
+                card("总成本", f"{total_cost:,.2f}")
+                card("总市值", f"{total_mv:,.2f}")
+                card("浮动盈亏", f"{pnl:+,.2f} ({pnl_pct:+.2f}%)",
+                     "green" if pnl >= 0 else "red")
+                card("24h 信号", f"{signals_24h}", "amber")
+            finally:
+                s.close()
+
+        refresh()
+
+        with ui.row().classes("gap-2"):
+            ui.button("🔄 刷新", on_click=refresh).props("color=primary")
+            ui.button("⏱ 立即扫描", on_click=lambda: (scan_once(), refresh(),
+                                                  ui.notify("扫描完成", color="positive")))
+
+        ui.label("📋 持仓概览").classes("text-xl font-bold mt-4")
+        holdings_table = ui.element("div").classes("w-full")
+
+        def refresh_holdings():
+            holdings_table.clear()
+            s = get_session()
+            try:
+                positions = s.query(Position).all()
+                rows = []
+                for p in positions:
+                    lp = _latest_price(s, p.symbol)
+                    price = lp.price if lp else 0
+                    change_pct = lp.change_pct if lp else 0
+                    pnl_pct = ((price - p.cost_price) / p.cost_price * 100) if p.cost_price > 0 else 0
+                    pnl_abs = (price - p.cost_price) * p.quantity
+                    rows.append({
+                        "symbol": f"{p.market}.{p.symbol}",
+                        "name": p.name or "-",
+                        "cost": f"{p.cost_price:.2f}",
+                        "price": f"{price:.2f}" if price else "-",
+                        "day_chg": f"{change_pct:+.2f}%",
+                        "pnl_pct": f"{pnl_pct:+.2f}%",
+                        "pnl_abs": f"{pnl_abs:+.2f}",
+                        "qty": f"{p.quantity:g}",
+                        "sl": f"{p.stop_loss:.2f}" if p.stop_loss else "-",
+                        "tp": f"{p.take_profit:.2f}" if p.take_profit else "-",
+                    })
+                with holdings_table:
+                    ui.table(columns=[
+                        {"name": "symbol", "label": "代码", "field": "symbol", "align": "left"},
+                        {"name": "name", "label": "名称", "field": "name", "align": "left"},
+                        {"name": "qty", "label": "数量", "field": "qty"},
+                        {"name": "cost", "label": "成本", "field": "cost"},
+                        {"name": "price", "label": "现价", "field": "price"},
+                        {"name": "day_chg", "label": "日涨幅", "field": "day_chg"},
+                        {"name": "pnl_pct", "label": "盈亏%", "field": "pnl_pct"},
+                        {"name": "pnl_abs", "label": "盈亏¥", "field": "pnl_abs"},
+                        {"name": "sl", "label": "止损", "field": "sl"},
+                        {"name": "tp", "label": "止盈", "field": "tp"},
+                    ], rows=rows).classes("w-full")
+            finally:
+                s.close()
+        refresh_holdings()
+
+
+# ────────── 持仓管理 ──────────
+@ui.page("/positions")
+def positions_page():
+    render_header()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("📋 持仓管理").classes("text-2xl font-bold")
+
+        # 添加表单
+        with ui.card().classes("w-full"):
+            ui.label("➕ 添加持仓").classes("font-bold")
+            with ui.row().classes("gap-2 items-end"):
+                sym = ui.input("代码 (NVDA/00700)").classes("w-32")
+                mkt = ui.select(["US", "HK"], value="US", label="市场").classes("w-24")
+                name = ui.input("名称").classes("w-32")
+                cost = ui.number("成本价", value=0, format="%.2f").classes("w-28")
+                qty = ui.number("数量", value=0).classes("w-24")
+                sl = ui.number("止损价", value=None, format="%.2f").classes("w-28")
+                tp = ui.number("止盈价", value=None, format="%.2f").classes("w-28")
+
+                def add():
+                    if not sym.value or not cost.value:
+                        ui.notify("代码和成本价必填", color="negative"); return
+                    s = get_session()
+                    try:
+                        p = Position(symbol=sym.value.upper(), market=mkt.value,
+                                     name=name.value or "", cost_price=float(cost.value),
+                                     quantity=float(qty.value or 0),
+                                     stop_loss=float(sl.value) if sl.value else None,
+                                     take_profit=float(tp.value) if tp.value else None)
+                        s.add(p); s.commit()
+                        ui.notify(f"✅ 添加 {p.market}.{p.symbol}", color="positive")
+                        sym.value=""; name.value=""; cost.value=0; qty.value=0
+                        sl.value=None; tp.value=None
+                        refresh()
+                    finally:
+                        s.close()
+                ui.button("添加", on_click=add).props("color=primary")
+
+        # 列表
+        list_box = ui.element("div").classes("w-full")
+
+        def refresh():
+            list_box.clear()
+            s = get_session()
+            try:
+                positions = s.query(Position).order_by(Position.id).all()
+                with list_box:
+                    for p in positions:
+                        with ui.card().classes("w-full"):
+                            with ui.row().classes("items-center gap-2 w-full"):
+                                ui.label(f"{p.market}.{p.symbol}").classes("font-bold text-lg w-32")
+                                name_in = ui.input(value=p.name or "").classes("w-32")
+                                cost_in = ui.number(value=p.cost_price, format="%.2f").classes("w-28")
+                                qty_in = ui.number(value=p.quantity).classes("w-24")
+                                sl_in = ui.number(value=p.stop_loss, format="%.2f").classes("w-28")
+                                tp_in = ui.number(value=p.take_profit, format="%.2f").classes("w-28")
+
+                                def save(pid=p.id, ni=name_in, ci=cost_in, qi=qty_in, si=sl_in, ti=tp_in):
+                                    ss = get_session()
+                                    try:
+                                        pp = ss.query(Position).get(pid)
+                                        pp.name = ni.value or ""
+                                        pp.cost_price = float(ci.value)
+                                        pp.quantity = float(qi.value or 0)
+                                        pp.stop_loss = float(si.value) if si.value else None
+                                        pp.take_profit = float(ti.value) if ti.value else None
+                                        ss.commit()
+                                        ui.notify("已保存", color="positive")
+                                    finally:
+                                        ss.close()
+                                ui.button("💾 保存", on_click=save).props("size=sm")
+
+                                def delete(pid=p.id):
+                                    ss = get_session()
+                                    try:
+                                        ss.query(Position).filter_by(id=pid).delete()
+                                        ss.commit()
+                                    finally:
+                                        ss.close()
+                                    ui.notify("已删除", color="warning")
+                                    refresh()
+                                ui.button("🗑", on_click=delete).props("color=negative size=sm")
+
+                                def fetch_n(sym_=p.symbol, mkt_=p.market, nm_=p.name):
+                                    n = fetch_for_symbol(sym_, mkt_, nm_)
+                                    ui.notify(f"新增 {n} 条新闻", color="info")
+                                ui.button("📰", on_click=fetch_n).props("size=sm")
+            finally:
+                s.close()
+        refresh()
+
+
+# ────────── 新闻 ──────────
+@ui.page("/news")
+def news_page():
+    render_header()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("📰 新闻流").classes("text-2xl font-bold")
+        box = ui.element("div").classes("w-full")
+
+        def refresh():
+            box.clear()
+            s = get_session()
+            try:
+                rows = (s.query(News).order_by(desc(News.published_at)).limit(100).all())
+                with box:
+                    for n in rows:
+                        color = {"bullish": "green", "bearish": "red", "neutral": "slate"}.get(n.sentiment, "slate")
+                        with ui.card().classes("w-full"):
+                            with ui.row().classes("items-start gap-2 w-full"):
+                                ui.badge(n.symbol or "GLOBAL").props("color=blue")
+                                ui.badge(n.sentiment or "neutral").props(f"color={color}")
+                                ui.label(n.published_at.strftime("%m-%d %H:%M") if n.published_at else "").classes("text-xs text-slate-500")
+                            ui.link(n.title, n.url, new_tab=True).classes("font-bold")
+                            if n.summary and n.summary != n.title:
+                                ui.label(n.summary).classes("text-sm text-slate-600")
+                            ui.label(f"来源: {n.source}").classes("text-xs text-slate-400")
+            finally:
+                s.close()
+        refresh()
+        ui.button("🔄 刷新", on_click=refresh).props("color=primary")
+
+
+# ────────── 信号 ──────────
+@ui.page("/signals")
+def signals_page():
+    render_header()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("🚨 信号历史").classes("text-2xl font-bold")
+        box = ui.element("div").classes("w-full")
+
+        def refresh():
+            box.clear()
+            s = get_session()
+            try:
+                rows = (s.query(Signal).filter(Signal.action != "HOLD")
+                        .order_by(desc(Signal.created_at)).limit(200).all())
+                data = [{
+                    "time": r.created_at.strftime("%m-%d %H:%M"),
+                    "symbol": f"{r.market}.{r.symbol}",
+                    "action": r.action,
+                    "price": f"{r.price:.2f}",
+                    "cost": f"{r.cost_price:.2f}",
+                    "pnl": f"{r.pnl_pct:+.2f}%",
+                    "reason": r.reason,
+                } for r in rows]
+                with box:
+                    ui.table(columns=[
+                        {"name": "time", "label": "时间", "field": "time"},
+                        {"name": "symbol", "label": "代码", "field": "symbol"},
+                        {"name": "action", "label": "动作", "field": "action"},
+                        {"name": "price", "label": "价格", "field": "price"},
+                        {"name": "cost", "label": "成本", "field": "cost"},
+                        {"name": "pnl", "label": "盈亏%", "field": "pnl"},
+                        {"name": "reason", "label": "说明", "field": "reason", "align": "left"},
+                    ], rows=data).classes("w-full")
+            finally:
+                s.close()
+        refresh()

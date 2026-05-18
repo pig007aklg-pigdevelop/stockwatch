@@ -1,107 +1,99 @@
-# 📈 StockWatch · Phase 1（后端核心）
+# 📈 StockWatch
 
-美股 + 港股盯盘系统，第一阶段交付：富途实时价格 + 定时扫描 + 止盈止损 Telegram 推送。
-
-> Phase 2 将加入 NiceGUI 看板和 Cloudflare Access 部署。
+美股 + 港股盯盘系统:富途实时行情 + 看板 + Telegram 推送 + 新闻聚合。
 
 ---
 
-## 🎯 Phase 1 功能
+## ✨ 功能
 
-- ✅ SQLite 数据库（持仓 / 价格快照 / 信号日志）
-- ✅ 富途 OpenAPI 实时拉港股+美股价格
-- ✅ APScheduler 每 15 分钟定时扫描（仅交易时段）
-- ✅ 整点摘要 + 触及止盈止损立即推送 Telegram
-- ✅ Docker Compose 一键启动（含 FutuOpenD 网关）
-- ⏳ Web 看板（Phase 2）
-- ⏳ 新闻聚合 + LLM 摘要（Phase 2）
+- 📊 **Web 看板**:浏览器增删改持仓、查看实时盈亏
+- 🌋 **富途 OpenAPI**:港股 + 美股实时价格
+- ⏱ **定时扫描**:交易时段每 15 分钟自动判断止盈止损
+- 📢 **Telegram 推送**:触发信号立即推 + 整点摘要
+- 📰 **新闻聚合**:Yahoo Finance + Google News,可选 LLM 中文摘要
+- 🚨 **信号历史**:所有止盈止损事件可追溯
+- 🐳 **Docker 一键部署** + Cloudflare Tunnel 免费 HTTPS
 
 ---
 
-## 🚀 本地快速测试（不用买服务器）
+## 🚀 本地试跑
 
-### 1. 安装依赖
 ```bash
-pip install -r requirements.txt
-```
+git clone https://github.com/pig007aklg-pigdevelop/stockwatch.git
+cd stockwatch
 
-### 2. 准备 FutuOpenD 网关
-富途 OpenAPI 必须通过本地网关运行：
-- Mac/Win 下载：https://www.futunn.com/download/openAPI
-- 装好后启动 FutuOpenD，登录富途账号（手机会收到授权请求）
-- 默认端口 11111
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-### 3. 配置环境变量
-```bash
 cp .env.example .env
-# 编辑 .env 填入 Telegram Bot Token 和 Chat ID
-```
+# 编辑 .env 填 Telegram Token
 
-### 4. 初始化数据库 + 录入持仓
-```bash
-python -m app.db.init_db
-python scripts/add_position.py NVDA US 135.0 10  # 代码 市场 成本价 数量
-python scripts/add_position.py 00700 HK 380.0 100
-```
-
-### 5. 启动
-```bash
+# 启动(富途未启动时,价格功能不可用,看板和持仓管理仍可用)
 python -m app.main
 ```
 
----
-
-## 🐳 Docker 部署（Phase 2 完善后使用）
-
-```bash
-docker compose up -d
-```
+浏览器打开 http://localhost:8080
 
 ---
 
-## 📁 目录结构
+## ☁️ 部署到云服务器
+
+详见 [docs/DEPLOY.md](docs/DEPLOY.md) — 含阿里云 + Cloudflare Tunnel + Access 完整步骤。
+
+---
+
+## 📁 项目结构
 
 ```
 stockwatch/
 ├── README.md
+├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
 ├── .env.example
-├── docker-compose.yml          # Phase 2
-├── Dockerfile                  # Phase 2
+├── docs/DEPLOY.md
 ├── app/
 │   ├── main.py                 # 入口
-│   ├── config.py               # 配置加载
-│   ├── db/
-│   │   ├── models.py           # SQLAlchemy 模型
-│   │   └── init_db.py
+│   ├── config.py
+│   ├── ui.py                   # NiceGUI 看板(4 个页面)
+│   ├── db/models.py
 │   ├── jobs/
 │   │   ├── scheduler.py        # APScheduler
-│   │   ├── price_scanner.py    # 价格扫描
-│   │   └── signal_engine.py    # 止盈止损判断
+│   │   ├── price_scanner.py
+│   │   ├── signal_engine.py
+│   │   └── news_scraper.py     # RSS 抓新闻
 │   └── services/
-│       ├── futu_client.py      # 富途封装
-│       └── telegram_bot.py     # 推送
-└── scripts/
-    └── add_position.py         # 命令行加持仓
+│       ├── futu_client.py
+│       ├── telegram_bot.py
+│       └── llm_client.py       # 新闻 LLM 摘要
+└── scripts/add_position.py     # CLI 加持仓
 ```
 
 ---
 
-## ⚠️ 已知限制
+## 🛠 配置说明 (.env)
 
-- Phase 1 没有看板，加持仓靠脚本
-- 未做异常重试（富途断线后需手动重启）
-- 未做多用户/登录
-- 港股 Level 1 行情有富途内部刷新频率限制
-
-这些都会在 Phase 2 完善。
+```
+TELEGRAM_BOT_TOKEN=xxx            # @BotFather 拿
+TELEGRAM_CHAT_ID=xxx              # @userinfobot 拿
+FUTU_HOST=127.0.0.1               # FutuOpenD 地址
+FUTU_PORT=11111
+SCAN_INTERVAL_MINUTES=15          # 扫描间隔
+HOURLY_SUMMARY=true               # 整点是否推摘要
+ALERT_COOLDOWN_MINUTES=60         # 同信号冷却,防刷屏
+WEB_PORT=8080
+OPENAI_API_KEY=                   # 可选,用于新闻摘要
+NEWS_INTERVAL_MINUTES=30
+```
 
 ---
 
-## 🔧 下次对话告诉我做这些（Phase 2）
+## 🔮 后续可加
 
-- [ ] NiceGUI 看板（增删改持仓 / K线 / 新闻流）
-- [ ] 新闻 RSS 聚合 + LLM 摘要
-- [ ] Cloudflare Tunnel + Access 部署文档
-- [ ] Docker Compose 完整化
-- [ ] 异常监控 + 自动重连
+- [ ] K 线图(TradingView 嵌入)
+- [ ] 分笔交易日志 + 真实持仓回测
+- [ ] 多策略引擎(移动止盈/MA 突破等)
+- [ ] 周报 PDF 自动生成
+- [ ] 移动端 PWA
+
+需要哪个,开新对话告诉我。

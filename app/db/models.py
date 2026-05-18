@@ -1,4 +1,5 @@
 """SQLAlchemy 模型"""
+import os
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -8,55 +9,62 @@ Base = declarative_base()
 
 
 class Position(Base):
-    """持仓表 - 看板可编辑"""
     __tablename__ = "positions"
     id = Column(Integer, primary_key=True)
-    symbol = Column(String(20), nullable=False, index=True)  # NVDA / 00700
-    market = Column(String(8), nullable=False)               # US / HK
+    symbol = Column(String(20), nullable=False, index=True)
+    market = Column(String(8), nullable=False)
     name = Column(String(64), default="")
     cost_price = Column(Float, nullable=False)
     quantity = Column(Float, default=0)
-    stop_loss = Column(Float, nullable=True)                 # 止损价
-    take_profit = Column(Float, nullable=True)               # 止盈价
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
     notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     @property
     def futu_code(self) -> str:
-        """转富途代码格式: US.NVDA / HK.00700"""
         return f"{self.market}.{self.symbol}"
 
 
 class PriceSnapshot(Base):
-    """价格快照 - 每次扫描写一条"""
     __tablename__ = "price_snapshots"
     id = Column(Integer, primary_key=True)
     symbol = Column(String(20), index=True)
     market = Column(String(8))
     price = Column(Float)
-    change_pct = Column(Float)         # 当日涨跌幅
+    change_pct = Column(Float)
     volume = Column(Float, default=0)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class Signal(Base):
-    """信号记录 - 止盈止损触发"""
     __tablename__ = "signals"
     id = Column(Integer, primary_key=True)
     symbol = Column(String(20), index=True)
     market = Column(String(8))
-    action = Column(String(16))        # STOP_LOSS / TAKE_PROFIT / HOLD / ALERT
+    action = Column(String(16))
     price = Column(Float)
     cost_price = Column(Float)
-    pnl_pct = Column(Float)            # 盈亏百分比
+    pnl_pct = Column(Float)
     reason = Column(Text)
-    pushed = Column(Integer, default=0)  # 是否已推送
+    pushed = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
-# 引擎+会话
-import os
+class News(Base):
+    __tablename__ = "news"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), index=True, nullable=True)  # None = 全局新闻
+    title = Column(String(500))
+    url = Column(String(1000), unique=True)
+    source = Column(String(64))
+    summary = Column(Text, default="")
+    sentiment = Column(String(16), default="")  # bullish/bearish/neutral
+    published_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
 engine = create_engine(f"sqlite:///{config.DB_PATH}", echo=False)
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
