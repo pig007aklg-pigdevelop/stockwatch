@@ -1,0 +1,30 @@
+"""配置加载"""
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+ROOT = Path(__file__).parent.parent
+
+class Config:
+    # Telegram
+    TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # Futu
+    FUTU_HOST = os.getenv("FUTU_HOST", "127.0.0.1")
+    FUTU_PORT = int(os.getenv("FUTU_PORT", "11111"))
+
+    # DB
+    DB_PATH = os.getenv("DB_PATH", str(ROOT / "data" / "stockwatch.db"))
+
+    # 推送策略
+    HOURLY_SUMMARY = os.getenv("HOURLY_SUMMARY", "true").lower() == "true"
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
+    ALERT_COOLDOWN = int(os.getenv("ALERT_COOLDOWN_MINUTES", "60"))
+
+    TZ = os.getenv("TZ", "Asia/Shanghai")
+
+
+config = Config()
