@@ -1,4 +1,5 @@
 """NiceGUI 看板 - 总览/持仓/新闻/信号"""
+import math
 from datetime import datetime, timedelta
 from nicegui import ui, run, app as nicegui_app
 from sqlalchemy import desc
@@ -15,10 +16,18 @@ def _latest_price(s, symbol):
     return row
 
 
-def _fmt_score(v):
-    if v is None:
+def _is_score_incomplete(p) -> bool:
+    return all(
+        getattr(p, f"score_{d}", None) is None
+        for d in ("valuation", "capital", "technical", "fundamental")
+    )
+
+
+def _fmt_score(v, incomplete: bool = False):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
         return "-"
-    return f"{v:.0f}"
+    text = f"{v:.0f}"
+    return f"⚠️{text}" if incomplete else text
 
 
 def _score_color(v):
@@ -134,7 +143,9 @@ def dashboard():
                     rows.append({
                         "symbol": f"{p.market}.{p.symbol}",
                         "name": p.name or "-",
-                        "composite": _fmt_score(p.composite_score),
+                        "composite": _fmt_score(
+                            p.composite_score, incomplete=_is_score_incomplete(p)
+                        ),
                         "cost": f"{p.cost_price:.2f}",
                         "price": f"{price:.2f}" if price else "-",
                         "day_chg": f"{change_pct:+.2f}%",
@@ -293,10 +304,13 @@ def position_detail(pos_id: str):
             )
             ui.label(f"更新时间: {updated}").classes("text-sm text-slate-500")
 
+            incomplete = _is_score_incomplete(p)
             comp = p.composite_score
-            ui.label(f"综合分: {_fmt_score(comp)}").classes(
+            ui.label(f"综合分: {_fmt_score(comp, incomplete=incomplete)}").classes(
                 f"text-3xl font-bold text-{_score_color(comp)}-600"
             )
+            if incomplete:
+                ui.label("⚠️ 数据不完整，综合分为保底值").classes("text-sm text-amber-600")
 
             dims = [
                 ("估值 25%", p.score_valuation, "valuation"),

@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from app.services.scoring import (
+    COMPOSITE_FALLBACK,
     CORRECTION_MAX,
     CORRECTION_MIN,
     PRICE_DEVIATION_MAX,
@@ -13,6 +14,7 @@ from app.services.scoring import (
     compute_composite,
     correction_factor,
     compute_recommended_prices,
+    substantive_dims_all_missing,
     weights_for_market,
 )
 from app.services import market_data
@@ -26,7 +28,8 @@ def test_weights_us_no_capital():
 
 def test_compute_composite_hk_all_dims():
     dims = DimensionScores(80, 70, 60, 50, NEWS_BASELINE)
-    c = compute_composite("HK", dims)
+    c, incomplete = compute_composite("HK", dims)
+    assert incomplete is False
     expected = (
         80 * WEIGHTS_HK["valuation"]
         + 70 * WEIGHTS_HK["capital"]
@@ -39,7 +42,7 @@ def test_compute_composite_hk_all_dims():
 
 def test_compute_composite_us_skips_capital():
     dims = DimensionScores(80, None, 60, 50, NEWS_BASELINE)
-    c = compute_composite("US", dims)
+    c, _ = compute_composite("US", dims)
     w = WEIGHTS_US
     expected = (
         80 * w["valuation"]
@@ -52,9 +55,24 @@ def test_compute_composite_us_skips_capital():
 
 def test_compute_composite_renormalize_missing():
     dims = DimensionScores(80, None, None, 50, NEWS_BASELINE)
-    c = compute_composite("HK", dims)
+    c, _ = compute_composite("HK", dims)
     assert c is not None
     assert 0 <= c <= 100
+
+
+def test_compute_composite_all_substantive_none_fallback():
+    dims = DimensionScores(None, None, None, None, NEWS_BASELINE)
+    assert substantive_dims_all_missing(dims) is True
+    c, incomplete = compute_composite("HK", dims)
+    assert c == COMPOSITE_FALLBACK
+    assert incomplete is True
+
+
+def test_compute_composite_nan_dimension_sanitized():
+    dims = DimensionScores(float("nan"), None, None, None, NEWS_BASELINE)
+    c, incomplete = compute_composite("HK", dims)
+    assert c == COMPOSITE_FALLBACK
+    assert incomplete is True
 
 
 def test_correction_factor():

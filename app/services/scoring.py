@@ -1,6 +1,7 @@
 """五维综合打分 + 推荐买卖价。"""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -9,10 +10,14 @@ import numpy as np
 from app.services import data_sources, market_data
 from app.services.ticker import is_us_market, normalize_symbol
 
+log = logging.getLogger(__name__)
+
 NEWS_BASELINE = 50.0
+COMPOSITE_FALLBACK = 50.0
 CORRECTION_MIN = 0.85
 CORRECTION_MAX = 1.10
-PRICE_DEVIATION_MAX = 0.20  # 推荐价相对现价 ±20%
+PRICE_DEVIATION_MAX = 0.20
+SUBSTANTIVE_DIMS = ("valuation", "capital", "technical", "fundamental")
 
 WEIGHTS_HK = {
     "valuation": 0.25,
@@ -56,6 +61,27 @@ class ScoreResult:
     recommended_buy: float | None
     recommended_sell: float | None
     updated_at: datetime
+    data_incomplete: bool = False
+
+
+def _sanitize_score(v: float | None) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        if np.isnan(f) or np.isinf(f):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_mean(parts: list[float]) -> float | None:
+    clean = [_sanitize_score(x) for x in parts]
+    clean = [x for x in clean if x is not None]
+    if not clean:
+        return None
+    return float(np.mean(clean))
 
 
 def weights_for_market(market: str) -> dict[str, float]:
@@ -68,16 +94,15 @@ def score_valuation(bundle: market_data.OhlcvBundle | None) -> float | None:
     pe_pct, pb_pct = market_data.pe_pb_history_percentiles(bundle)
     parts = []
     if pe_pct is not None:
-        parts.append(100 - pe_pct)  # 分位越低越便宜 → 分越高
+        parts.append(100 - pe_pct)
     if pb_pct is not None and pb_pct != pe_pct:
         parts.append(100 - pb_pct)
     if not parts:
-        # 仅有价格序列：相对 5 年收盘价分位
         pct = market_data.percentile_rank(float(bundle.close.iloc[-1]), bundle.close)
         if pct is not None:
             return float(np.clip(100 - pct, 0, 100))
         return None
-    return float(np.clip(np.mean(parts), 0, 100))
+    return _sanitize_score(float(np.clip(np.mean(parts), 0, 100)))
 
 
 def score_capital(market: str, symbol: str) -> float | None:
@@ -96,9 +121,7 @@ def score_capital(market: str, symbol: str) -> float | None:
         parts.append(float(np.clip(50 + np.tanh(v / 1e8) * 50, 0, 100)))
     if flow and flow.main_net_pct is not None:
         parts.append(float(np.clip(50 + flow.main_net_pct, 0, 100)))
-    if not parts:
-        return None
-    return float(np.mean(parts))
+    return _safe_mean(parts)
 
 
 def score_technical(bundle: market_data.OhlcvBundle | None) -> float | None:
@@ -107,22 +130,18 @@ def score_technical(bundle: market_data.OhlcvBundle | None) -> float | None:
     t = market_data.technical_levels(bundle)
     parts = []
     if t["rsi"] is not None:
-        rsi = t["rsi"]
-        # 30-70 中性偏高，超卖加分
-        if rsi < 30:
+        rsi_val = t["rsi"]
+        if rsi_val < 30:
             parts.append(80)
-        elif rsi > 70:
+        elif rsi_val > 70:
             parts.append(30)
         else:
-            parts.append(50 + (50 - rsi) * 0.5)
+            parts.append(50 + (50 - rsi_val) * 0.5)
     if t["ma_score"] is not None:
         parts.append(t["ma_score"])
-    # 距 52 周高点越远（回调多）略加分
     dist = t.get("dist_from_52w_high_pct", 0)
     parts.append(float(np.clip(50 + dist * 0.5, 0, 100)))
-    if not parts:
-        return None
-    return float(np.clip(np.mean(parts), 0, 100))
+    return _safe_mean(parts)
 
 
 def score_fundamental(market: str, symbol: str) -> float | None:
@@ -148,26 +167,50 @@ def score_fundamental(market: str, symbol: str) -> float | None:
         m = metric_score(val, trend)
         if m is not None:
             parts.append(m)
-    if not parts:
-        return None
-    return float(np.mean(parts))
+    return _safe_mean(parts)
 
 
-def compute_composite(market: str, dims: DimensionScores) -> float | None:
-    weights = weights_for_market(market)
+def substantive_dims_all_missing(dims: DimensionScores) -> bool:
     scores = dims.as_dict()
+    return all(_sanitize_score(scores.get(k)) is None for k in SUBSTANTIVE_DIMS)
+
+
+def compute_composite(market: str, dims: DimensionScores) -> tuple[float, bool]:
+    """
+    返回 (composite, data_incomplete)。
+    四维全无有效数据时保底 50 分并标记 incomplete。
+    """
+    if substantive_dims_all_missing(dims):
+        log.warning(
+            "Scoring incomplete for market=%s: all substantive dimensions missing, fallback=%s",
+            market,
+            COMPOSITE_FALLBACK,
+        )
+        return COMPOSITE_FALLBACK, True
+
+    weights = weights_for_market(market)
+    scores = {k: _sanitize_score(v) for k, v in dims.as_dict().items()}
     active = {k: v for k, v in scores.items() if v is not None and weights.get(k, 0) > 0}
     if not active:
-        return None
+        log.warning("Scoring no active dimensions, fallback=%s", COMPOSITE_FALLBACK)
+        return COMPOSITE_FALLBACK, True
+
     total_w = sum(weights[k] for k in active)
     if total_w <= 0:
-        return None
+        return COMPOSITE_FALLBACK, True
+
     composite = sum(scores[k] * weights[k] for k in active) / total_w
-    return round(float(composite), 2)
+    composite = _sanitize_score(composite)
+    if composite is None:
+        log.warning("Scoring composite is NaN, fallback=%s", COMPOSITE_FALLBACK)
+        return COMPOSITE_FALLBACK, True
+
+    missing_count = sum(1 for k in SUBSTANTIVE_DIMS if scores.get(k) is None)
+    incomplete = missing_count >= len(SUBSTANTIVE_DIMS) or missing_count >= 3
+    return round(float(composite), 2), incomplete
 
 
 def correction_factor(score: float | None) -> float:
-    """估值/基本面对推荐价的修正系数，线性映射并 clamp [0.85, 1.10]。"""
     if score is None:
         return 1.0
     raw = CORRECTION_MIN + (float(score) / 100.0) * (CORRECTION_MAX - CORRECTION_MIN)
@@ -175,7 +218,6 @@ def correction_factor(score: float | None) -> float:
 
 
 def _clamp_to_current_price(price: float, target: float) -> float:
-    """推荐价相对现价不超过 ±20%。"""
     lo = price * (1 - PRICE_DEVIATION_MAX)
     hi = price * (1 + PRICE_DEVIATION_MAX)
     return float(np.clip(target, lo, hi))
@@ -189,17 +231,20 @@ def compute_recommended_prices(
         return None, None
     t = market_data.technical_levels(bundle)
     current = t["price"]
-    if current <= 0:
+    if current <= 0 or np.isnan(current):
         return None, None
     buy_base = max(t["low_20d"], t["bb_lower"])
     sell_base = min(t["high_52w"], t["bb_upper"])
+    if np.isnan(buy_base) or np.isnan(sell_base):
+        buy_base = current * 0.95
+        sell_base = current * 1.05
     buy = buy_base * correction_factor(dims.valuation)
     sell = sell_base * correction_factor(dims.fundamental)
     buy = _clamp_to_current_price(current, buy)
     sell = _clamp_to_current_price(current, sell)
-    if buy <= 0 or sell <= 0:
+    if buy <= 0 or sell <= 0 or np.isnan(buy) or np.isnan(sell):
         return None, None
-    return round(buy, 2), round(sell, 2)
+    return round(float(buy), 2), round(float(sell), 2)
 
 
 def score_position(market: str, symbol: str) -> ScoreResult:
@@ -212,14 +257,17 @@ def score_position(market: str, symbol: str) -> ScoreResult:
         fundamental=score_fundamental(market, sym),
         news=NEWS_BASELINE,
     )
-    composite = compute_composite(market, dims)
+    composite, incomplete = compute_composite(market, dims)
     buy, sell = compute_recommended_prices(bundle, dims)
+    if buy is None and bundle is not None:
+        log.warning("recommended_buy missing %s.%s despite OHLCV bundle", market, sym)
     return ScoreResult(
         composite=composite,
         dimensions=dims,
         recommended_buy=buy,
         recommended_sell=sell,
         updated_at=datetime.utcnow(),
+        data_incomplete=incomplete,
     )
 
 
