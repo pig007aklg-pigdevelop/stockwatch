@@ -18,6 +18,8 @@ def main():
     ap.add_argument("quantity", type=float)
     ap.add_argument("--sl", type=float, default=None)
     ap.add_argument("--tp", type=float, default=None)
+    ap.add_argument("--watch-below", type=float, default=None)
+    ap.add_argument("--watch-above", type=float, default=None)
     ap.add_argument("--name", default="")
     args = ap.parse_args()
 
@@ -28,6 +30,7 @@ def main():
             symbol=args.symbol.upper(), market=args.market, name=args.name,
             cost_price=args.cost_price, quantity=args.quantity,
             stop_loss=args.sl, take_profit=args.tp,
+            watch_below=args.watch_below, watch_above=args.watch_above,
         )
         s.add(pos); s.commit()
         print(f"✅ Added {pos.market}.{pos.symbol} @ {pos.cost_price} x {pos.quantity}")

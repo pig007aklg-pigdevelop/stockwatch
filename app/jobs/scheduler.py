@@ -7,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.config import config
 from app.jobs.price_scanner import scan_once, hourly_summary
 from app.jobs.news_scraper import fetch_all as fetch_news_all
+from app.jobs.scoring_job import run_daily_scoring
 
 log = logging.getLogger(__name__)
 TZ = pytz.timezone(config.TZ)
@@ -54,6 +55,14 @@ def news_job():
         log.exception("news_job error: %s", e)
 
 
+def scoring_job():
+    try:
+        log.info("⏱  Daily scoring job")
+        run_daily_scoring()
+    except Exception as e:
+        log.exception("scoring_job error: %s", e)
+
+
 def build_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone=TZ)
     sched.add_job(scan_job, CronTrigger(minute=f"*/{config.SCAN_INTERVAL}", timezone=TZ),
@@ -62,4 +71,12 @@ def build_scheduler() -> BackgroundScheduler:
                   id="summary", max_instances=1)
     sched.add_job(news_job, CronTrigger(minute=f"*/{config.NEWS_INTERVAL}", timezone=TZ),
                   id="news", max_instances=1, coalesce=True)
+    # 工作日 06:00 综合打分 (Mon-Fri)
+    sched.add_job(
+        scoring_job,
+        CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=TZ),
+        id="scoring",
+        max_instances=1,
+        coalesce=True,
+    )
     return sched

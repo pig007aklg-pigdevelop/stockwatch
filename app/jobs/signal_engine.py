@@ -1,4 +1,6 @@
 """信号引擎 - 基于成本/止盈/止损价生成动作建议"""
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from app.db.models import get_session, Position, PriceSnapshot, Signal
 from app.config import config
@@ -28,6 +30,31 @@ def evaluate(pos: Position, price: float) -> dict:
         reason = f"🔥 浮盈已 {pnl_pct:+.2f}% — 考虑分批止盈"
 
     return {"action": action, "reason": reason, "pnl_pct": pnl_pct}
+
+
+def evaluate_watch(pos: Position, price: float) -> dict | None:
+    """
+    手工兜底：watch_below / watch_above。
+    返回 None 表示未触发；否则 {action, reason, pnl_pct}。
+    """
+    pnl_pct = (price - pos.cost_price) / pos.cost_price * 100 if pos.cost_price else 0
+    if pos.watch_below is not None and price <= pos.watch_below:
+        return {
+            "action": "WATCH_BUY",
+            "reason": (
+                f"📉 跌破关注下限 {pos.watch_below:.2f},当前 {price:.2f} — 手工兜底买入关注"
+            ),
+            "pnl_pct": pnl_pct,
+        }
+    if pos.watch_above is not None and price >= pos.watch_above:
+        return {
+            "action": "WATCH_SELL",
+            "reason": (
+                f"📈 突破关注上限 {pos.watch_above:.2f},当前 {price:.2f} — 手工兜底卖出关注"
+            ),
+            "pnl_pct": pnl_pct,
+        }
+    return None
 
 
 def should_push(symbol: str, action: str) -> bool:

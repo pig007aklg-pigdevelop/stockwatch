@@ -4,7 +4,7 @@ from datetime import datetime
 from app.db.models import get_session, Position, PriceSnapshot, Signal
 from app.services.futu_client import futu
 from app.services import telegram_bot
-from app.jobs.signal_engine import evaluate, should_push
+from app.jobs.signal_engine import evaluate, evaluate_watch, should_push
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def scan_once():
                 volume=data["volume"],
             ))
 
-            # 评估
+            # 评估：止损止盈
             ev = evaluate(pos, price)
             sig = Signal(
                 symbol=pos.symbol,
@@ -54,11 +54,27 @@ def scan_once():
                 pnl_pct=ev["pnl_pct"],
                 reason=ev["reason"],
             )
-
             if should_push(pos.symbol, ev["action"]):
                 alerts.append((pos, ev, price))
                 sig.pushed = 1
             s.add(sig)
+
+            # 手工兜底 watch_below / watch_above
+            wv = evaluate_watch(pos, price)
+            if wv:
+                wsig = Signal(
+                    symbol=pos.symbol,
+                    market=pos.market,
+                    action=wv["action"],
+                    price=price,
+                    cost_price=pos.cost_price,
+                    pnl_pct=wv["pnl_pct"],
+                    reason=wv["reason"],
+                )
+                if should_push(pos.symbol, wv["action"]):
+                    alerts.append((pos, wv, price))
+                    wsig.pushed = 1
+                s.add(wsig)
 
         s.commit()
 

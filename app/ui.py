@@ -1,17 +1,55 @@
 """NiceGUI 看板 - 总览/持仓/新闻/信号"""
 from datetime import datetime, timedelta
-from nicegui import ui, app as nicegui_app
+from nicegui import ui, run, app as nicegui_app
 from sqlalchemy import desc
 from app.db.models import get_session, Position, PriceSnapshot, Signal, News
 from app.services.futu_client import futu
 from app.jobs.price_scanner import scan_once
 from app.jobs.news_scraper import fetch_for_symbol
+from app.jobs.scoring_job import run_daily_scoring
 
 
 def _latest_price(s, symbol):
     row = (s.query(PriceSnapshot).filter_by(symbol=symbol)
            .order_by(desc(PriceSnapshot.timestamp)).first())
     return row
+
+
+def _fmt_score(v):
+    if v is None:
+        return "-"
+    return f"{v:.0f}"
+
+
+def _score_color(v):
+    if v is None:
+        return "slate"
+    if v < 30:
+        return "red"
+    if v < 60:
+        return "amber"
+    return "green"
+
+
+def _wire_scoring_button(btn, label: str, on_success=None):
+    """立即打分：disable + 全局锁，后台线程执行。"""
+
+    async def _run_scoring():
+        btn.disable()
+        btn.set_text("打分中...")
+        try:
+            ok = await run.io_bound(run_daily_scoring)
+            if ok:
+                if on_success:
+                    on_success()
+                ui.notify("打分完成", color="positive")
+            else:
+                ui.notify("打分任务进行中，请稍候", color="warning")
+        finally:
+            btn.enable()
+            btn.set_text(label)
+
+    btn.on_click(_run_scoring)
 
 
 def render_header():
@@ -71,6 +109,12 @@ def dashboard():
             ui.button("🔄 刷新", on_click=refresh).props("color=primary")
             ui.button("⏱ 立即扫描", on_click=lambda: (scan_once(), refresh(),
                                                   ui.notify("扫描完成", color="positive")))
+            score_btn = ui.button("📐 立即打分").props("color=secondary")
+            _wire_scoring_button(
+                score_btn,
+                "📐 立即打分",
+                on_success=lambda: (refresh(), refresh_holdings()),
+            )
 
         ui.label("📋 持仓概览").classes("text-xl font-bold mt-4")
         holdings_table = ui.element("div").classes("w-full")
@@ -90,28 +134,38 @@ def dashboard():
                     rows.append({
                         "symbol": f"{p.market}.{p.symbol}",
                         "name": p.name or "-",
+                        "composite": _fmt_score(p.composite_score),
                         "cost": f"{p.cost_price:.2f}",
                         "price": f"{price:.2f}" if price else "-",
                         "day_chg": f"{change_pct:+.2f}%",
                         "pnl_pct": f"{pnl_pct:+.2f}%",
                         "pnl_abs": f"{pnl_abs:+.2f}",
                         "qty": f"{p.quantity:g}",
+                        "rec_buy": f"{p.recommended_buy:.2f}" if p.recommended_buy else "-",
+                        "rec_sell": f"{p.recommended_sell:.2f}" if p.recommended_sell else "-",
+                        "watch_lo": f"{p.watch_below:.2f}" if p.watch_below else "-",
+                        "watch_hi": f"{p.watch_above:.2f}" if p.watch_above else "-",
                         "sl": f"{p.stop_loss:.2f}" if p.stop_loss else "-",
                         "tp": f"{p.take_profit:.2f}" if p.take_profit else "-",
+                        "_pid": p.id,
                     })
                 with holdings_table:
                     ui.table(columns=[
                         {"name": "symbol", "label": "代码", "field": "symbol", "align": "left"},
                         {"name": "name", "label": "名称", "field": "name", "align": "left"},
+                        {"name": "composite", "label": "综合分", "field": "composite"},
                         {"name": "qty", "label": "数量", "field": "qty"},
                         {"name": "cost", "label": "成本", "field": "cost"},
                         {"name": "price", "label": "现价", "field": "price"},
                         {"name": "day_chg", "label": "日涨幅", "field": "day_chg"},
                         {"name": "pnl_pct", "label": "盈亏%", "field": "pnl_pct"},
-                        {"name": "pnl_abs", "label": "盈亏¥", "field": "pnl_abs"},
+                        {"name": "rec_buy", "label": "推荐买", "field": "rec_buy"},
+                        {"name": "rec_sell", "label": "推荐卖", "field": "rec_sell"},
+                        {"name": "watch_lo", "label": "关注下限", "field": "watch_lo"},
+                        {"name": "watch_hi", "label": "关注上限", "field": "watch_hi"},
                         {"name": "sl", "label": "止损", "field": "sl"},
                         {"name": "tp", "label": "止盈", "field": "tp"},
-                    ], rows=rows).classes("w-full")
+                    ], rows=rows, row_key="symbol").classes("w-full")
             finally:
                 s.close()
         refresh_holdings()
@@ -135,6 +189,8 @@ def positions_page():
                 qty = ui.number("数量", value=0).classes("w-24")
                 sl = ui.number("止损价", value=None, format="%.2f").classes("w-28")
                 tp = ui.number("止盈价", value=None, format="%.2f").classes("w-28")
+                wb = ui.number("关注下限", value=None, format="%.2f").classes("w-28")
+                wa = ui.number("关注上限", value=None, format="%.2f").classes("w-28")
 
                 def add():
                     if not sym.value or not cost.value:
@@ -145,11 +201,14 @@ def positions_page():
                                      name=name.value or "", cost_price=float(cost.value),
                                      quantity=float(qty.value or 0),
                                      stop_loss=float(sl.value) if sl.value else None,
-                                     take_profit=float(tp.value) if tp.value else None)
+                                     take_profit=float(tp.value) if tp.value else None,
+                                     watch_below=float(wb.value) if wb.value else None,
+                                     watch_above=float(wa.value) if wa.value else None)
                         s.add(p); s.commit()
                         ui.notify(f"✅ 添加 {p.market}.{p.symbol}", color="positive")
                         sym.value=""; name.value=""; cost.value=0; qty.value=0
                         sl.value=None; tp.value=None
+                        wb.value=None; wa.value=None
                         refresh()
                     finally:
                         s.close()
@@ -173,8 +232,12 @@ def positions_page():
                                 qty_in = ui.number(value=p.quantity).classes("w-24")
                                 sl_in = ui.number(value=p.stop_loss, format="%.2f").classes("w-28")
                                 tp_in = ui.number(value=p.take_profit, format="%.2f").classes("w-28")
+                                wb_in = ui.number(value=p.watch_below, format="%.2f").classes("w-28")
+                                wa_in = ui.number(value=p.watch_above, format="%.2f").classes("w-28")
+                                ui.link("📐 打分详情", f"/positions/{p.id}").classes("text-sm")
 
-                                def save(pid=p.id, ni=name_in, ci=cost_in, qi=qty_in, si=sl_in, ti=tp_in):
+                                def save(pid=p.id, ni=name_in, ci=cost_in, qi=qty_in,
+                                         si=sl_in, ti=tp_in, wbi=wb_in, wai=wa_in):
                                     ss = get_session()
                                     try:
                                         pp = ss.query(Position).get(pid)
@@ -183,6 +246,8 @@ def positions_page():
                                         pp.quantity = float(qi.value or 0)
                                         pp.stop_loss = float(si.value) if si.value else None
                                         pp.take_profit = float(ti.value) if ti.value else None
+                                        pp.watch_below = float(wbi.value) if wbi.value else None
+                                        pp.watch_above = float(wai.value) if wai.value else None
                                         ss.commit()
                                         ui.notify("已保存", color="positive")
                                     finally:
@@ -207,6 +272,68 @@ def positions_page():
             finally:
                 s.close()
         refresh()
+        batch_score_btn = ui.button("📐 全部重新打分").props("color=secondary")
+        _wire_scoring_button(batch_score_btn, "📐 全部重新打分", on_success=refresh)
+
+
+@ui.page("/positions/{pos_id}")
+def position_detail(pos_id: str):
+    render_header()
+    with ui.column().classes("w-full max-w-3xl mx-auto p-4 gap-4"):
+        s = get_session()
+        try:
+            p = s.query(Position).get(int(pos_id))
+            if not p:
+                ui.label("未找到持仓").classes("text-red-600")
+                return
+            ui.label(f"📐 {p.market}.{p.symbol} {p.name or ''}").classes("text-2xl font-bold")
+            updated = (
+                p.score_updated_at.strftime("%Y-%m-%d %H:%M UTC")
+                if p.score_updated_at else "尚未打分"
+            )
+            ui.label(f"更新时间: {updated}").classes("text-sm text-slate-500")
+
+            comp = p.composite_score
+            ui.label(f"综合分: {_fmt_score(comp)}").classes(
+                f"text-3xl font-bold text-{_score_color(comp)}-600"
+            )
+
+            dims = [
+                ("估值 25%", p.score_valuation, "valuation"),
+                ("资金面 25%", p.score_capital, "capital"),
+                ("技术面 20%", p.score_technical, "technical"),
+                ("基本面 20%", p.score_fundamental, "fundamental"),
+                ("新闻 10%", p.score_news, "news"),
+            ]
+            if p.market == "US":
+                dims[0] = ("估值 33%", p.score_valuation, "valuation")
+                dims[1] = ("资金面 —", p.score_capital, "capital")
+                dims[2] = ("技术面 27%", p.score_technical, "technical")
+                dims[3] = ("基本面 27%", p.score_fundamental, "fundamental")
+                dims[4] = ("新闻 13%", p.score_news, "news")
+
+            for label, val, _ in dims:
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.label(label).classes("w-28")
+                    v = val if val is not None else 0
+                    ui.linear_progress(value=v / 100, show_value=False).classes("flex-1")
+                    ui.label(_fmt_score(val)).classes("w-10 text-right")
+
+            with ui.card().classes("w-full"):
+                ui.label("推荐价 (打分驱动)").classes("font-bold")
+                ui.label(
+                    f"推荐买: {p.recommended_buy:.2f}" if p.recommended_buy else "推荐买: -"
+                )
+                ui.label(
+                    f"推荐卖: {p.recommended_sell:.2f}" if p.recommended_sell else "推荐卖: -"
+                )
+                ui.label(
+                    f"手工兜底 — 下限: {p.watch_below or '-'} / 上限: {p.watch_above or '-'}"
+                ).classes("text-sm text-slate-600")
+
+            ui.link("← 返回持仓列表", "/positions")
+        finally:
+            s.close()
 
 
 # ────────── 新闻 ──────────

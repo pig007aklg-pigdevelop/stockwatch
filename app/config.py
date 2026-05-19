@@ -37,5 +37,9 @@ class Config:
     # News
     NEWS_INTERVAL = int(os.getenv("NEWS_INTERVAL_MINUTES", "30"))
 
+    # Scoring (Phase 4.1)
+    SCORE_OPPORTUNITY_THRESHOLD = float(os.getenv("SCORE_OPPORTUNITY_THRESHOLD", "30"))
+    SCORING_ALERT_COOLDOWN_HOURS = int(os.getenv("SCORING_ALERT_COOLDOWN_HOURS", "24"))
+
 
 config = Config()
