@@ -1,4 +1,6 @@
 """LLM 客户端 - 新闻摘要+情绪分析"""
+from __future__ import annotations
+
 import logging
 from typing import Optional
 from app.config import config
@@ -46,3 +48,13 @@ def summarize_news(title: str, content: str = "", symbol: str = "") -> dict:
     except Exception as e:
         log.warning("LLM summarize failed: %s", e)
         return {"summary": title[:200], "sentiment": "neutral"}
+
+
+SENTIMENT_MAP = {"bullish": 100.0, "neutral": 50.0, "bearish": 0.0}
+
+
+def sentiment_to_score(sentiment: str | None) -> float | None:
+    """把 bullish/bearish/neutral 映射到 0-100,未知返回 None"""
+    if not sentiment:
+        return None
+    return SENTIMENT_MAP.get(sentiment.strip().lower())

@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from datetime import datetime, timedelta
+
+from app.db.models import News
 from app.services.scoring import (
     COMPOSITE_FALLBACK,
     CORRECTION_MAX,
@@ -14,6 +17,7 @@ from app.services.scoring import (
     compute_composite,
     correction_factor,
     compute_recommended_prices,
+    score_news,
     substantive_dims_all_missing,
     weights_for_market,
 )
@@ -103,3 +107,56 @@ def test_recommended_prices():
     current = float(close.iloc[-1])
     assert current * (1 - PRICE_DEVIATION_MAX) <= buy <= current * (1 + PRICE_DEVIATION_MAX)
     assert current * (1 - PRICE_DEVIATION_MAX) <= sell <= current * (1 + PRICE_DEVIATION_MAX)
+
+
+def test_score_news_baseline_when_empty(monkeypatch):
+    class _Q:
+        def filter(self, *a, **k):
+            return self
+
+        def all(self):
+            return []
+
+    class _S:
+        def query(self, *a, **k):
+            return _Q()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("app.services.scoring.get_session", lambda: _S())
+    sc, is_base = score_news("NVDA")
+    assert sc == 50.0
+    assert is_base is True
+
+
+def test_score_news_bullish_dominant(session, monkeypatch):
+    now = datetime.utcnow()
+    session.add_all(
+        [
+            News(symbol="NVDA", title="t1", url=f"u1{now.timestamp()}", source="x", summary="", sentiment="bullish", published_at=now),
+            News(symbol="NVDA", title="t2", url=f"u2{now.timestamp()}", source="x", summary="", sentiment="bullish", published_at=now - timedelta(hours=6)),
+            News(symbol="NVDA", title="t3", url=f"u3{now.timestamp()}", source="x", summary="", sentiment="neutral", published_at=now - timedelta(days=1)),
+        ]
+    )
+    session.commit()
+    monkeypatch.setattr("app.services.scoring.get_session", lambda: session)
+    sc, is_base = score_news("NVDA")
+    assert is_base is False
+    assert sc > 80
+
+
+def test_score_news_recent_weighted_higher(session, monkeypatch):
+    now = datetime.utcnow()
+    session.add_all(
+        [
+            News(symbol="NVDA", title="old", url=f"uo{now.timestamp()}", source="x", summary="", sentiment="bearish", published_at=now - timedelta(days=7)),
+            News(symbol="NVDA", title="new1", url=f"un1{now.timestamp()}", source="x", summary="", sentiment="bullish", published_at=now),
+            News(symbol="NVDA", title="new2", url=f"un2{now.timestamp()}", source="x", summary="", sentiment="bullish", published_at=now - timedelta(hours=2)),
+        ]
+    )
+    session.commit()
+    monkeypatch.setattr("app.services.scoring.get_session", lambda: session)
+    sc, is_base = score_news("NVDA")
+    assert is_base is False
+    assert sc > 60

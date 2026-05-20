@@ -3,16 +3,21 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
+from sqlalchemy import or_
 
+from app.db.models import News, get_session
 from app.services import data_sources, market_data
+from app.services.llm_client import sentiment_to_score
 from app.services.ticker import is_us_market, normalize_symbol
 
 log = logging.getLogger(__name__)
 
 NEWS_BASELINE = 50.0
+NEWS_LOOKBACK_DAYS = 7
+NEWS_MIN_COUNT = 2
 COMPOSITE_FALLBACK = 50.0
 CORRECTION_MIN = 0.85
 CORRECTION_MAX = 1.10
@@ -170,6 +175,47 @@ def score_fundamental(market: str, symbol: str) -> float | None:
     return _safe_mean(parts)
 
 
+def score_news(symbol: str) -> tuple[float, bool]:
+    """
+    基于近 NEWS_LOOKBACK_DAYS 天 News.sentiment 的加权得分(越新权重越大)。
+    返回 (score, is_baseline) — is_baseline=True 表示数据不足回落 50。
+    """
+    cutoff = datetime.utcnow() - timedelta(days=NEWS_LOOKBACK_DAYS)
+    s = get_session()
+    try:
+        rows = (
+            s.query(News.sentiment, News.published_at)
+            .filter(
+                or_(News.symbol == symbol, News.symbol.is_(None)),
+                News.published_at >= cutoff,
+                News.sentiment != "",
+            )
+            .all()
+        )
+    finally:
+        s.close()
+
+    pairs = [(sentiment_to_score(sent), ts) for sent, ts in rows]
+    pairs = [(sc, ts) for sc, ts in pairs if sc is not None and ts is not None]
+    if len(pairs) < NEWS_MIN_COUNT:
+        return NEWS_BASELINE, True
+
+    now = datetime.utcnow()
+    weighted: list[tuple[float, float]] = []
+    for sc, ts in pairs:
+        age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
+        w = max(0.5, 1.0 - 0.5 * age_days / NEWS_LOOKBACK_DAYS)
+        weighted.append((float(sc), float(w)))
+
+    total_w = sum(w for _, w in weighted)
+    score = (
+        sum(sc * w for sc, w in weighted) / total_w
+        if total_w > 0
+        else NEWS_BASELINE
+    )
+    return float(np.clip(score, 0, 100)), False
+
+
 def substantive_dims_all_missing(dims: DimensionScores) -> bool:
     scores = dims.as_dict()
     return all(_sanitize_score(scores.get(k)) is None for k in SUBSTANTIVE_DIMS)
@@ -250,12 +296,13 @@ def compute_recommended_prices(
 def score_position(market: str, symbol: str) -> ScoreResult:
     sym = normalize_symbol(market, symbol)
     bundle = market_data.fetch_ohlcv(market, sym)
+    news_score, _news_is_baseline = score_news(sym)
     dims = DimensionScores(
         valuation=score_valuation(bundle),
         capital=score_capital(market, sym),
         technical=score_technical(bundle),
         fundamental=score_fundamental(market, sym),
-        news=NEWS_BASELINE,
+        news=news_score,
     )
     composite, incomplete = compute_composite(market, dims)
     buy, sell = compute_recommended_prices(bundle, dims)

@@ -34,10 +34,11 @@ def evaluate(pos: Position, price: float) -> dict:
 
 def evaluate_watch(pos: Position, price: float) -> dict | None:
     """
-    手工兜底：watch_below / watch_above。
-    返回 None 表示未触发；否则 {action, reason, pnl_pct}。
+    手工兜底 + 系统推荐价兜底。
+    优先级: watch_below/above (手填) > recommended_buy/sell (系统算)
     """
     pnl_pct = (price - pos.cost_price) / pos.cost_price * 100 if pos.cost_price else 0
+
     if pos.watch_below is not None and price <= pos.watch_below:
         return {
             "action": "WATCH_BUY",
@@ -51,6 +52,27 @@ def evaluate_watch(pos: Position, price: float) -> dict | None:
             "action": "WATCH_SELL",
             "reason": (
                 f"📈 突破关注上限 {pos.watch_above:.2f},当前 {price:.2f} — 手工兜底卖出关注"
+            ),
+            "pnl_pct": pnl_pct,
+        }
+
+    if pos.watch_below is None and pos.recommended_buy and price <= pos.recommended_buy:
+        score_txt = f",综合分 {pos.composite_score:.0f}" if pos.composite_score else ""
+        return {
+            "action": "AUTO_BUY_HINT",
+            "reason": (
+                f"🤖 跌至系统推荐买入价 {pos.recommended_buy:.2f},"
+                f"当前 {price:.2f}{score_txt} — 可考虑分批吸纳"
+            ),
+            "pnl_pct": pnl_pct,
+        }
+    if pos.watch_above is None and pos.recommended_sell and price >= pos.recommended_sell:
+        score_txt = f",综合分 {pos.composite_score:.0f}" if pos.composite_score else ""
+        return {
+            "action": "AUTO_SELL_HINT",
+            "reason": (
+                f"🤖 涨至系统推荐卖出价 {pos.recommended_sell:.2f},"
+                f"当前 {price:.2f}{score_txt} — 可考虑分批减仓"
             ),
             "pnl_pct": pnl_pct,
         }
