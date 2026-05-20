@@ -84,6 +84,9 @@ ALERT_COOLDOWN_MINUTES=60         # 同信号冷却,防刷屏
 WEB_PORT=8080
 OPENAI_API_KEY=                   # 可选,用于新闻摘要
 NEWS_INTERVAL_MINUTES=30
+SCORE_OPPORTUNITY_THRESHOLD=70      # 综合分≥70 推「💎 低估机会」
+SCORE_RISK_THRESHOLD=30             # 综合分<30 推「⚠️ 风险警报」
+SCORING_ALERT_COOLDOWN_HOURS=24
 ```
 
 ---

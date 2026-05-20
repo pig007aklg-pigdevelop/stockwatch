@@ -88,7 +88,7 @@ def _run_daily_scoring_impl() -> None:
         s.commit()
         if updated:
             _send_top5_report(updated)
-            _send_opportunity_alerts(s, updated)
+            _send_score_alerts(s, updated)
     except Exception as e:
         log.exception("run_daily_scoring impl error: %s", e)
         s.rollback()
@@ -115,20 +115,37 @@ def _send_top5_report(positions: list) -> None:
     telegram_bot.send("\n".join(lines))
 
 
-def _send_opportunity_alerts(session, positions: list) -> None:
-    threshold = config.SCORE_OPPORTUNITY_THRESHOLD
+def _send_score_alerts(session, positions: list) -> None:
+    """根据综合分推送两类信号:
+       - composite >= OPPORTUNITY_THRESHOLD → SCORE_OPPORTUNITY (💎 低估机会)
+       - composite <  RISK_THRESHOLD        → SCORE_RISK         (⚠️ 风险警报)
+    """
+    opp_thr = config.SCORE_OPPORTUNITY_THRESHOLD
+    risk_thr = config.SCORE_RISK_THRESHOLD
     cooldown = timedelta(hours=config.SCORING_ALERT_COOLDOWN_HOURS)
     cutoff = datetime.utcnow() - cooldown
 
     for pos in positions:
-        if pos.composite_score is None or pos.composite_score >= threshold:
+        if pos.composite_score is None:
             continue
+
+        if pos.composite_score >= opp_thr:
+            action = "SCORE_OPPORTUNITY"
+            title = "💎 低估机会"
+            extra = f"建议关注买入价 {pos.recommended_buy:.2f}" if pos.recommended_buy else ""
+        elif pos.composite_score < risk_thr:
+            action = "SCORE_RISK"
+            title = "⚠️ 风险警报"
+            extra = f"建议关注卖出价 {pos.recommended_sell:.2f}" if pos.recommended_sell else ""
+        else:
+            continue
+
         recent = (
             session.query(Signal)
             .filter(
                 Signal.symbol == pos.symbol,
                 Signal.market == pos.market,
-                Signal.action == "SCORE_OPPORTUNITY",
+                Signal.action == action,
                 Signal.created_at >= cutoff,
                 Signal.pushed == 1,
             )
@@ -136,22 +153,24 @@ def _send_opportunity_alerts(session, positions: list) -> None:
         )
         if recent:
             continue
+
         text = (
-            f"💎 *低估机会* {pos.market}.{pos.symbol} {pos.name or ''}\n"
-            f"综合分 *{pos.composite_score:.0f}* < {threshold:.0f}\n"
-            f"推荐买 {pos.recommended_buy or '-'} / 卖 {pos.recommended_sell or '-'}"
-        )
+            f"{title} {pos.market}.{pos.symbol} {pos.name or ''}\n"
+            f"综合分 _{pos.composite_score:.0f}_  "
+            f"估值{pos.score_valuation or '-'} 基本面{pos.score_fundamental or '-'}\n"
+            f"{extra}"
+        ).strip()
+
         telegram_bot.send(text)
-        session.add(
-            Signal(
-                symbol=pos.symbol,
-                market=pos.market,
-                action="SCORE_OPPORTUNITY",
-                price=0,
-                cost_price=pos.cost_price,
-                pnl_pct=0,
-                reason=f"综合分 {pos.composite_score:.0f} 跌破 {threshold:.0f}",
-                pushed=1,
-            )
+        sig = Signal(
+            symbol=pos.symbol,
+            market=pos.market,
+            action=action,
+            price=0.0,
+            cost_price=pos.cost_price,
+            pnl_pct=0.0,
+            reason=text,
+            pushed=1,
         )
+        session.add(sig)
     session.commit()
