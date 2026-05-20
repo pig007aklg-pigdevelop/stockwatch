@@ -1,5 +1,9 @@
 from app.db.models import Position
-from app.jobs.signal_engine import evaluate_watch, evaluate
+from app.jobs.signal_engine import (
+    classify_tier,
+    evaluate_watch,
+    evaluate,
+)
 
 
 def make_pos(**kwargs) -> Position:
@@ -58,3 +62,39 @@ def test_manual_watch_takes_priority_over_recommended():
 def test_no_signal_when_neither_set():
     pos = make_pos(recommended_buy=None, watch_below=None)
     assert evaluate_watch(pos, 80) is None
+
+
+def test_classify_tier_heavy():
+    assert classify_tier(0.50) == "HEAVY"
+
+
+def test_classify_tier_light():
+    assert classify_tier(0.05) == "LIGHT"
+
+
+def test_classify_tier_normal():
+    assert classify_tier(0.20) == "NORMAL"
+
+
+def test_classify_tier_none_defaults_normal():
+    assert classify_tier(None) == "NORMAL"
+
+
+def test_heavy_position_triggers_alert_at_minus_5():
+    pos = make_pos(cost_price=100)
+    r = evaluate(pos, 94, weight=0.5)  # -6% on heavy
+    assert r["action"] == "ALERT"
+    assert r["tier"] == "HEAVY"
+
+
+def test_light_position_no_alert_at_minus_8():
+    pos = make_pos(cost_price=100)
+    r = evaluate(pos, 92, weight=0.05)  # -8% on light: 阈值是 -12%
+    assert r["action"] == "HOLD"
+    assert r["tier"] == "LIGHT"
+
+
+def test_stop_loss_independent_of_tier():
+    pos = make_pos(cost_price=100, stop_loss=95)
+    r = evaluate(pos, 94, weight=0.5)
+    assert r["action"] == "STOP_LOSS"

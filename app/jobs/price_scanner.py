@@ -9,6 +9,20 @@ from app.jobs.signal_engine import evaluate, evaluate_watch, should_push
 log = logging.getLogger(__name__)
 
 
+def _compute_weights(positions, snap) -> dict[int, float]:
+    """返回 {position.id: weight}; 总市值=0 时返回空 dict (全 None)"""
+    market_values: dict[int, float] = {}
+    for p in positions:
+        data = snap.get(p.futu_code) if snap else None
+        px = data.get("price", 0) if data else 0
+        price = px if px and px > 0 else p.cost_price
+        market_values[p.id] = float(price) * float(p.quantity or 0)
+    total = sum(market_values.values())
+    if total <= 0:
+        return {}
+    return {pid: mv / total for pid, mv in market_values.items()}
+
+
 def scan_once():
     """单次扫描所有持仓"""
     s = get_session()
@@ -25,6 +39,7 @@ def scan_once():
             log.warning("Empty snapshot from Futu")
             return
 
+        weights = _compute_weights(positions, snap)
         alerts = []
         for pos in positions:
             data = snap.get(pos.futu_code)
@@ -44,7 +59,7 @@ def scan_once():
             ))
 
             # 评估：止损止盈
-            ev = evaluate(pos, price)
+            ev = evaluate(pos, price, weight=weights.get(pos.id))
             sig = Signal(
                 symbol=pos.symbol,
                 market=pos.market,

@@ -6,12 +6,34 @@ from app.db.models import get_session, Position, PriceSnapshot, Signal
 from app.config import config
 
 
-def evaluate(pos: Position, price: float) -> dict:
+TIER_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "HEAVY": (-5.0, 15.0),
+    "NORMAL": (-8.0, 20.0),
+    "LIGHT": (-12.0, 30.0),
+}
+
+
+def classify_tier(weight: float | None) -> str:
+    """根据仓位市值权重返回档位名。weight 为 None 时按 NORMAL 处理。"""
+    if weight is None:
+        return "NORMAL"
+    if weight >= config.HEAVY_POSITION_THRESHOLD:
+        return "HEAVY"
+    if weight < config.LIGHT_POSITION_THRESHOLD:
+        return "LIGHT"
+    return "NORMAL"
+
+
+def evaluate(pos: Position, price: float, weight: float | None = None) -> dict:
     """
-    返回 {action, reason, pnl_pct}
+    返回 {action, reason, pnl_pct, tier}
     action: HOLD / TAKE_PROFIT / STOP_LOSS / ALERT
+
+    weight: 仓位市值占总持仓市值的比例 (0-1),用于分档兜底阈值
     """
     pnl_pct = (price - pos.cost_price) / pos.cost_price * 100
+    tier = classify_tier(weight)
+    loss_thr, gain_thr = TIER_THRESHOLDS[tier]
 
     action = "HOLD"
     reason = f"当前 {price:.2f},成本 {pos.cost_price:.2f},盈亏 {pnl_pct:+.2f}%"
@@ -22,14 +44,20 @@ def evaluate(pos: Position, price: float) -> dict:
     elif pos.take_profit and price >= pos.take_profit:
         action = "TAKE_PROFIT"
         reason = f"🎯 触达止盈 {pos.take_profit:.2f},当前 {price:.2f},盈利 {pnl_pct:+.2f}% — 建议落袋"
-    elif pnl_pct <= -8:
+    elif pnl_pct <= loss_thr:
         action = "ALERT"
-        reason = f"⚠️ 浮亏已 {pnl_pct:+.2f}%,接近警戒线 — 关注"
-    elif pnl_pct >= 20:
+        reason = (
+            f"⚠️ [{tier}] 浮亏已 {pnl_pct:+.2f}%(档位线 {loss_thr:.0f}%) "
+            f"— 关注"
+        )
+    elif pnl_pct >= gain_thr:
         action = "ALERT"
-        reason = f"🔥 浮盈已 {pnl_pct:+.2f}% — 考虑分批止盈"
+        reason = (
+            f"🔥 [{tier}] 浮盈已 {pnl_pct:+.2f}%(档位线 +{gain_thr:.0f}%) "
+            f"— 考虑分批止盈"
+        )
 
-    return {"action": action, "reason": reason, "pnl_pct": pnl_pct}
+    return {"action": action, "reason": reason, "pnl_pct": pnl_pct, "tier": tier}
 
 
 def evaluate_watch(pos: Position, price: float) -> dict | None:

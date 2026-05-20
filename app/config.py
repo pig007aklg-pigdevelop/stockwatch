@@ -42,5 +42,9 @@ class Config:
     SCORE_RISK_THRESHOLD = float(os.getenv("SCORE_RISK_THRESHOLD", "30"))
     SCORING_ALERT_COOLDOWN_HOURS = int(os.getenv("SCORING_ALERT_COOLDOWN_HOURS", "24"))
 
+    # Position weight tiers (Phase 4.2)
+    HEAVY_POSITION_THRESHOLD = float(os.getenv("HEAVY_POSITION_THRESHOLD", "0.30"))
+    LIGHT_POSITION_THRESHOLD = float(os.getenv("LIGHT_POSITION_THRESHOLD", "0.10"))
+
 
 config = Config()
