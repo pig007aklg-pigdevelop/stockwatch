@@ -3,7 +3,8 @@ import math
 from datetime import datetime, timedelta
 from nicegui import ui, run, app as nicegui_app
 from sqlalchemy import desc
-from app.db.models import get_session, Position, PriceSnapshot, Signal, News
+from app.db.models import get_session, Position, PriceSnapshot, Signal, News, Trade
+from app.jobs.constants import ACTIONABLE
 from app.services.futu_client import futu
 from app.jobs.price_scanner import scan_once
 from app.jobs.news_scraper import fetch_for_symbol
@@ -69,6 +70,7 @@ def render_header():
         ui.link("持仓", "/positions").classes("text-white mx-2")
         ui.link("新闻", "/news").classes("text-white mx-2")
         ui.link("信号", "/signals").classes("text-white mx-2")
+        ui.link("交易日志", "/trades").classes("text-white mx-2")
 
 
 # ────────── 总览 ──────────
@@ -417,3 +419,134 @@ def signals_page():
             finally:
                 s.close()
         refresh()
+
+
+# ────────── 交易日志 ──────────
+@ui.page("/trades")
+def trades_page():
+    render_header()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("📒 交易日志").classes("text-2xl font-bold")
+
+        list_box = ui.element("div").classes("w-full")
+
+        def refresh():
+            list_box.clear()
+            s = get_session()
+            try:
+                trades = s.query(Trade).order_by(desc(Trade.traded_at)).limit(100).all()
+                with list_box:
+                    if not trades:
+                        ui.label("(暂无交易)").classes("text-slate-500")
+                        return
+                    rows = [{
+                        "time": t.traded_at.strftime("%m-%d %H:%M"),
+                        "symbol": f"{t.market}.{t.symbol}",
+                        "side": t.side,
+                        "price": f"{t.price:.2f}",
+                        "qty": f"{t.quantity:g}",
+                        "pnl": f"{t.realized_pnl:+.2f}" if t.realized_pnl is not None else "-",
+                        "hold": str(t.holding_days) if t.holding_days else "-",
+                        "signal": f"#{t.linked_signal_id}" if t.linked_signal_id else "-",
+                        "notes": (t.notes or "")[:40],
+                    } for t in trades]
+                    ui.table(columns=[
+                        {"name": "time", "label": "时间", "field": "time"},
+                        {"name": "symbol", "label": "代码", "field": "symbol"},
+                        {"name": "side", "label": "方向", "field": "side"},
+                        {"name": "price", "label": "价格", "field": "price"},
+                        {"name": "qty", "label": "数量", "field": "qty"},
+                        {"name": "pnl", "label": "盈亏", "field": "pnl"},
+                        {"name": "hold", "label": "持有天", "field": "hold"},
+                        {"name": "signal", "label": "信号", "field": "signal"},
+                        {"name": "notes", "label": "备注", "field": "notes", "align": "left"},
+                    ], rows=rows).classes("w-full")
+            finally:
+                s.close()
+
+        with ui.card().classes("w-full mt-0"):
+            ui.label("➕ 新增交易").classes("text-lg font-bold")
+            s = get_session()
+            try:
+                positions = s.query(Position).all()
+                pos_options = {p.id: f"{p.market}.{p.symbol} {p.name or ''}" for p in positions}
+                cutoff = datetime.utcnow() - timedelta(days=30)
+                open_signals = (
+                    s.query(Signal)
+                    .filter(
+                        Signal.created_at >= cutoff,
+                        Signal.acted_trade_id.is_(None),
+                        Signal.action.in_(list(ACTIONABLE)),
+                    )
+                    .order_by(desc(Signal.created_at))
+                    .limit(50)
+                    .all()
+                )
+                sig_options = {0: "(无关联)"}
+                for sig in open_signals:
+                    sig_options[sig.id] = (
+                        f"#{sig.id} {sig.market}.{sig.symbol} {sig.action} "
+                        f"@ {sig.price:.2f} ({sig.created_at.strftime('%m-%d %H:%M')})"
+                    )
+            finally:
+                s.close()
+
+            with ui.row().classes("gap-2 items-end flex-wrap"):
+                pos_sel = ui.select(pos_options, label="持仓").classes("w-64")
+                side_sel = ui.select({"BUY": "买入", "SELL": "卖出"}, label="方向", value="BUY").classes("w-32")
+                price_in = ui.number(label="成交价", format="%.4f", value=0).classes("w-32")
+                qty_in = ui.number(label="数量", format="%.0f", value=0).classes("w-28")
+                fee_in = ui.number(label="手续费", format="%.2f", value=0).classes("w-28")
+                pnl_in = ui.number(label="实现盈亏(SELL)", format="%.2f", value=0).classes("w-32")
+                hold_in = ui.number(label="持有天数(SELL)", format="%.0f", value=0).classes("w-28")
+                sig_sel = ui.select(sig_options, label="关联信号", value=0).classes("w-96")
+                date_in = ui.input(label="成交时间", value=datetime.now().strftime("%Y-%m-%d %H:%M")).classes("w-44")
+                notes_in = ui.input(label="备注").classes("w-64")
+
+                def submit():
+                    if not pos_sel.value or not price_in.value or not qty_in.value:
+                        ui.notify("持仓/成交价/数量必填", color="negative")
+                        return
+                    ss = get_session()
+                    try:
+                        p = ss.get(Position, int(pos_sel.value))
+                        if not p:
+                            ui.notify("持仓不存在", color="negative")
+                            return
+                        try:
+                            traded_at = datetime.strptime(date_in.value, "%Y-%m-%d %H:%M")
+                        except ValueError:
+                            traded_at = datetime.utcnow()
+                        side = side_sel.value
+                        linked_sig_id = int(sig_sel.value) if sig_sel.value else None
+                        t = Trade(
+                            symbol=p.symbol,
+                            market=p.market,
+                            side=side,
+                            price=float(price_in.value),
+                            quantity=float(qty_in.value),
+                            fee=float(fee_in.value or 0),
+                            realized_pnl=float(pnl_in.value) if side == "SELL" and pnl_in.value else None,
+                            holding_days=int(hold_in.value) if side == "SELL" and hold_in.value else None,
+                            linked_signal_id=linked_sig_id,
+                            notes=notes_in.value or "",
+                            traded_at=traded_at,
+                        )
+                        ss.add(t)
+                        ss.flush()
+                        p.last_trade_id = t.id
+                        if linked_sig_id:
+                            sig = ss.get(Signal, linked_sig_id)
+                            if sig:
+                                sig.acted_trade_id = t.id
+                        ss.commit()
+                        ui.notify(f"✅ 已记录 {side} {p.symbol} #{t.id}", color="positive")
+                        refresh()
+                    finally:
+                        ss.close()
+
+                ui.button("提交", on_click=submit).props("color=primary")
+
+        ui.label("📋 交易记录").classes("text-xl font-bold mt-4")
+        refresh()
+        ui.button("🔄 刷新", on_click=refresh).props("color=primary")

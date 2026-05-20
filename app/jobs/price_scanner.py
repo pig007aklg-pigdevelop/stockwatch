@@ -7,6 +7,7 @@ from app.db.models import get_session, Position, PriceSnapshot, Signal
 from app.services.futu_client import futu
 from app.services import telegram_bot
 from app.jobs.signal_engine import evaluate, evaluate_watch, should_push
+from app.jobs.constants import ACTIONABLE
 from app.config import config
 
 log = logging.getLogger(__name__)
@@ -73,8 +74,8 @@ def scan_once():
                 reason=ev["reason"],
             )
             if should_push(pos.symbol, ev["action"]):
-                alerts.append((pos, ev, price))
                 sig.pushed = 1
+                alerts.append((pos, ev, price, sig))
             s.add(sig)
 
             # 日内异动检测
@@ -97,8 +98,8 @@ def scan_once():
                     reason=move_reason,
                 )
                 if should_push(pos.symbol, move_action):
-                    alerts.append((pos, {"action": move_action, "reason": move_reason, "pnl_pct": ev["pnl_pct"]}, price))
                     msig.pushed = 1
+                    alerts.append((pos, {"action": move_action, "reason": move_reason, "pnl_pct": ev["pnl_pct"]}, price, msig))
                 s.add(msig)
 
             # 手工兜底 watch_below / watch_above
@@ -114,19 +115,22 @@ def scan_once():
                     reason=wv["reason"],
                 )
                 if should_push(pos.symbol, wv["action"]):
-                    alerts.append((pos, wv, price))
                     wsig.pushed = 1
+                    alerts.append((pos, wv, price, wsig))
                 s.add(wsig)
 
+        s.flush()
         s.commit()
 
         # 推送告警
-        for pos, ev, price in alerts:
+        for pos, ev, price, sig in alerts:
             text = (
                 f"*{pos.market}.{pos.symbol}* {pos.name}\n"
                 f"{ev['reason']}\n"
                 f"持仓 {pos.quantity:g} @ {pos.cost_price:.2f}"
             )
+            if ev["action"] in ACTIONABLE and sig.id:
+                text += f"\n📝 用 UI 交易日志记录此次操作 (signal_id={sig.id})"
             telegram_bot.send(text)
             log.info(f"Pushed alert for {pos.symbol}: {ev['action']}")
 

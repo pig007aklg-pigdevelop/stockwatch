@@ -29,6 +29,7 @@ class Position(Base):
     score_updated_at = Column(DateTime, nullable=True)
     recommended_buy = Column(Float, nullable=True)
     recommended_sell = Column(Float, nullable=True)
+    last_trade_id = Column(Integer, nullable=True)
     notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -60,6 +61,7 @@ class Signal(Base):
     pnl_pct = Column(Float)
     reason = Column(Text)
     pushed = Column(Integer, default=0)
+    acted_trade_id = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -73,6 +75,23 @@ class News(Base):
     summary = Column(Text, default="")
     sentiment = Column(String(16), default="")  # bullish/bearish/neutral
     published_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Trade(Base):
+    __tablename__ = "trades"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    market = Column(String(8), nullable=False)
+    side = Column(String(8), nullable=False)  # BUY / SELL
+    price = Column(Float, nullable=False)
+    quantity = Column(Float, nullable=False)
+    fee = Column(Float, default=0.0)
+    realized_pnl = Column(Float, nullable=True)
+    holding_days = Column(Integer, nullable=True)
+    linked_signal_id = Column(Integer, nullable=True, index=True)
+    notes = Column(Text, default="")
+    traded_at = Column(DateTime, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
