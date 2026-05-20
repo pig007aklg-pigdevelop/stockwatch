@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 from app.jobs.scoring_job import run_daily_scoring, _send_top5_report, _send_score_alerts
 from app.services.scoring import ScoreResult, DimensionScores, NEWS_BASELINE
-from app.db.models import Signal
+from app.db.models import Signal, Watchlist, Position
 from app.config import config
 
 
@@ -82,6 +82,65 @@ def test_mid_score_no_alert(session):
         _send_score_alerts(session, [pos])
         mock_send.assert_not_called()
     assert session.query(Signal).count() == 0
+
+
+def test_scoring_job_processes_both_position_and_watchlist(session, sample_position):
+    w = Watchlist(symbol="NVDA", market="US", name="NVIDIA")
+    session.add(w)
+    session.commit()
+
+    result = ScoreResult(
+        composite=80.0,
+        dimensions=DimensionScores(70, 60, 65, 55, NEWS_BASELINE),
+        recommended_buy=100.0,
+        recommended_sell=150.0,
+        updated_at=datetime.utcnow(),
+    )
+    with patch("app.jobs.scoring_job.scoring.score_position", return_value=result):
+        with patch("app.jobs.scoring_job.call_with_timeout", side_effect=lambda fn, *a, **k: fn(*a)):
+            with patch("app.jobs.scoring_job._send_top5_report"):
+                with patch("app.jobs.scoring_job._send_score_alerts"):
+                    with patch("app.jobs.scoring_job.get_session", return_value=session):
+                        with patch.object(session, "close"):
+                            with patch("app.jobs.scoring_job.time.sleep"):
+                                assert run_daily_scoring() is True
+
+    p = session.query(Position).filter_by(symbol="00700").first()
+    ww = session.query(Watchlist).filter_by(symbol="NVDA").first()
+    assert p.composite_score == 80.0
+    assert ww.composite_score == 80.0
+
+
+def test_top5_marks_source_position_or_watchlist():
+    p = Position(symbol="A", market="US", cost_price=1.0, quantity=1)
+    p.composite_score = 90.0
+    w = Watchlist(symbol="B", market="HK")
+    w.composite_score = 85.0
+    with patch("app.jobs.scoring_job.telegram_bot.send") as mock_send:
+        _send_top5_report([p, w])
+        text = mock_send.call_args[0][0]
+        assert "[持]" in text
+        assert "[关]" in text
+
+
+def test_opportunity_alert_text_differs_position_vs_watchlist(session):
+    pos = _mk_pos(75.0, recommended_buy=9.2)
+    watch = Watchlist(symbol="WL", market="US", name="W")
+    watch.composite_score = 75.0
+    watch.recommended_buy = 8.0
+    watch.score_valuation = 70
+    watch.score_fundamental = 60
+
+    with patch("app.jobs.scoring_job.telegram_bot.send") as mock_send:
+        _send_score_alerts(session, [pos])
+        pos_text = mock_send.call_args[0][0]
+        mock_send.reset_mock()
+        _send_score_alerts(session, [watch])
+        watch_text = mock_send.call_args[0][0]
+
+    assert "加仓" in pos_text
+    assert "建仓" in watch_text
+    assert "加仓" not in watch_text
 
 
 def test_cooldown_blocks_repeated_alert(session):

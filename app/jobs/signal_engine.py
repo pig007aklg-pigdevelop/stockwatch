@@ -107,6 +107,27 @@ def evaluate_watch(pos: Position, price: float) -> dict | None:
     return None
 
 
+def evaluate_watchlist_watch(w, price: float) -> dict | None:
+    """关注名单: 仅手填 watch_below / watch_above。"""
+    if w.watch_below is not None and price <= w.watch_below:
+        return {
+            "action": "WATCH_BUY",
+            "reason": (
+                f"📉 跌破关注下限 {w.watch_below:.2f},当前 {price:.2f} — 手工兜底买入关注"
+            ),
+            "pnl_pct": 0.0,
+        }
+    if w.watch_above is not None and price >= w.watch_above:
+        return {
+            "action": "WATCH_SELL",
+            "reason": (
+                f"📈 突破关注上限 {w.watch_above:.2f},当前 {price:.2f} — 手工兜底卖出关注"
+            ),
+            "pnl_pct": 0.0,
+        }
+    return None
+
+
 def should_push(symbol: str, action: str) -> bool:
     """避免刷屏: 同 symbol 同 action 在冷却期内不重复推"""
     if action == "HOLD":

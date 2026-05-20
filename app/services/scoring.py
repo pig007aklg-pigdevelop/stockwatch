@@ -318,13 +318,17 @@ def score_position(market: str, symbol: str) -> ScoreResult:
     )
 
 
-def apply_result_to_position(pos, result: ScoreResult) -> None:
-    pos.composite_score = result.composite
-    pos.score_valuation = result.dimensions.valuation
-    pos.score_capital = result.dimensions.capital
-    pos.score_technical = result.dimensions.technical
-    pos.score_fundamental = result.dimensions.fundamental
-    pos.score_news = result.dimensions.news
-    pos.recommended_buy = result.recommended_buy
-    pos.recommended_sell = result.recommended_sell
-    pos.score_updated_at = result.updated_at
+def apply_result_to_record(record, result: ScoreResult) -> None:
+    """通用版: Position / Watchlist 都适用。"""
+    record.composite_score = result.composite
+    record.score_valuation = result.dimensions.valuation
+    record.score_capital = result.dimensions.capital
+    record.score_technical = result.dimensions.technical
+    record.score_fundamental = result.dimensions.fundamental
+    record.score_news = result.dimensions.news
+    record.recommended_buy = result.recommended_buy
+    record.recommended_sell = result.recommended_sell
+    record.score_updated_at = result.updated_at
+
+
+apply_result_to_position = apply_result_to_record

@@ -3,7 +3,7 @@ import math
 from datetime import datetime, timedelta
 from nicegui import ui, run, app as nicegui_app
 from sqlalchemy import desc
-from app.db.models import get_session, Position, PriceSnapshot, Signal, News, Trade
+from app.db.models import get_session, Position, Watchlist, PriceSnapshot, Signal, News, Trade
 from app.jobs.constants import ACTIONABLE
 from app.services.futu_client import futu
 from app.jobs.price_scanner import scan_once
@@ -68,6 +68,7 @@ def render_header():
         ui.space()
         ui.link("总览", "/").classes("text-white mx-2")
         ui.link("持仓", "/positions").classes("text-white mx-2")
+        ui.link("关注名单", "/watchlist").classes("text-white mx-2")
         ui.link("新闻", "/news").classes("text-white mx-2")
         ui.link("信号", "/signals").classes("text-white mx-2")
         ui.link("交易日志", "/trades").classes("text-white mx-2")
@@ -105,7 +106,9 @@ def dashboard():
                             ui.label(title).classes("text-sm text-slate-600")
                             ui.label(value).classes("text-2xl font-bold")
 
+                watch_count = s.query(Watchlist).count()
                 card("持仓数", f"{len(positions)}")
+                card("关注", f"{watch_count}", "indigo")
                 card("总成本", f"{total_cost:,.2f}")
                 card("总市值", f"{total_mv:,.2f}")
                 card("浮动盈亏", f"{pnl:+,.2f} ({pnl_pct:+.2f}%)",
@@ -284,6 +287,145 @@ def positions_page():
                                 ui.button("📰", on_click=fetch_n).props("size=sm")
             finally:
                 s.close()
+        refresh()
+        batch_score_btn = ui.button("📐 全部重新打分").props("color=secondary")
+        _wire_scoring_button(batch_score_btn, "📐 全部重新打分", on_success=refresh)
+
+
+# ────────── 关注名单 ──────────
+@ui.page("/watchlist")
+def watchlist_page():
+    render_header()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("🔭 关注名单").classes("text-2xl font-bold")
+
+        with ui.card().classes("w-full"):
+            ui.label("➕ 添加关注").classes("font-bold")
+            with ui.row().classes("gap-2 items-end"):
+                sym = ui.input("代码 (NVDA/00700)").classes("w-32")
+                mkt = ui.select(["US", "HK"], value="US", label="市场").classes("w-24")
+                name = ui.input("名称").classes("w-32")
+                wb = ui.number("关注下限", value=None, format="%.2f").classes("w-28")
+                wa = ui.number("关注上限", value=None, format="%.2f").classes("w-28")
+                notes = ui.input("备注").classes("w-48")
+
+                def add():
+                    if not sym.value:
+                        ui.notify("代码必填", color="negative")
+                        return
+                    s = get_session()
+                    try:
+                        w = Watchlist(
+                            symbol=sym.value.upper(),
+                            market=mkt.value,
+                            name=name.value or "",
+                            watch_below=float(wb.value) if wb.value else None,
+                            watch_above=float(wa.value) if wa.value else None,
+                            notes=notes.value or "",
+                        )
+                        s.add(w)
+                        s.commit()
+                        ui.notify(f"✅ 添加关注 {w.market}.{w.symbol}", color="positive")
+                        sym.value = ""
+                        name.value = ""
+                        wb.value = None
+                        wa.value = None
+                        notes.value = ""
+                        refresh()
+                    finally:
+                        s.close()
+
+                ui.button("添加", on_click=add).props("color=primary")
+
+        list_box = ui.element("div").classes("w-full")
+
+        def refresh():
+            list_box.clear()
+            s = get_session()
+            try:
+                items = s.query(Watchlist).order_by(Watchlist.id).all()
+                with list_box:
+                    if not items:
+                        ui.label("(暂无关注)").classes("text-slate-500")
+                        return
+                    rows = []
+                    for w in items:
+                        lp = _latest_price(s, w.symbol)
+                        price = lp.price if lp else 0
+                        change_pct = lp.change_pct if lp else 0
+                        rows.append({
+                            "symbol": f"{w.market}.{w.symbol}",
+                            "name": w.name or "-",
+                            "composite": _fmt_score(
+                                w.composite_score, incomplete=_is_score_incomplete(w)
+                            ),
+                            "price": f"{price:.2f}" if price else "-",
+                            "day_chg": f"{change_pct:+.2f}%",
+                            "rec_buy": f"{w.recommended_buy:.2f}" if w.recommended_buy else "-",
+                            "rec_sell": f"{w.recommended_sell:.2f}" if w.recommended_sell else "-",
+                            "watch_lo": f"{w.watch_below:.2f}" if w.watch_below else "-",
+                            "watch_hi": f"{w.watch_above:.2f}" if w.watch_above else "-",
+                            "notes": (w.notes or "")[:30],
+                            "_wid": w.id,
+                        })
+                    ui.table(columns=[
+                        {"name": "symbol", "label": "代码", "field": "symbol", "align": "left"},
+                        {"name": "name", "label": "名称", "field": "name", "align": "left"},
+                        {"name": "composite", "label": "综合分", "field": "composite"},
+                        {"name": "price", "label": "现价", "field": "price"},
+                        {"name": "day_chg", "label": "日涨幅", "field": "day_chg"},
+                        {"name": "rec_buy", "label": "推荐买", "field": "rec_buy"},
+                        {"name": "rec_sell", "label": "推荐卖", "field": "rec_sell"},
+                        {"name": "watch_lo", "label": "关注下限", "field": "watch_lo"},
+                        {"name": "watch_hi", "label": "关注上限", "field": "watch_hi"},
+                        {"name": "notes", "label": "备注", "field": "notes", "align": "left"},
+                    ], rows=rows, row_key="symbol").classes("w-full mb-4")
+
+                    for w in items:
+                        with ui.card().classes("w-full mt-2"):
+                            with ui.row().classes("items-center gap-2 w-full flex-wrap"):
+                                ui.label(f"{w.market}.{w.symbol}").classes("font-bold text-lg w-32")
+                                name_in = ui.input(value=w.name or "").classes("w-32")
+                                wb_in = ui.number(value=w.watch_below, format="%.2f").classes("w-28")
+                                wa_in = ui.number(value=w.watch_above, format="%.2f").classes("w-28")
+                                notes_in = ui.input(value=w.notes or "").classes("w-48")
+
+                                def save(wid=w.id, ni=name_in, wbi=wb_in, wai=wa_in, nti=notes_in):
+                                    ss = get_session()
+                                    try:
+                                        ww = ss.get(Watchlist, wid)
+                                        ww.name = ni.value or ""
+                                        ww.watch_below = float(wbi.value) if wbi.value else None
+                                        ww.watch_above = float(wai.value) if wai.value else None
+                                        ww.notes = nti.value or ""
+                                        ss.commit()
+                                        ui.notify("已保存", color="positive")
+                                        refresh()
+                                    finally:
+                                        ss.close()
+
+                                ui.button("💾 保存", on_click=save).props("size=sm")
+
+                                def delete(wid=w.id):
+                                    ss = get_session()
+                                    try:
+                                        ss.query(Watchlist).filter_by(id=wid).delete()
+                                        ss.commit()
+                                    finally:
+                                        ss.close()
+                                    ui.notify("已删除", color="warning")
+                                    refresh()
+
+                                ui.button("🗑", on_click=delete).props("color=negative size=sm")
+
+                                def fetch_n(sym_=w.symbol, mkt_=w.market, nm_=w.name):
+                                    n = fetch_for_symbol(sym_, mkt_, nm_)
+                                    ui.notify(f"新增 {n} 条新闻", color="info")
+
+                                ui.button("📰", on_click=fetch_n).props("size=sm")
+            finally:
+                s.close()
+
         refresh()
         batch_score_btn = ui.button("📐 全部重新打分").props("color=secondary")
         _wire_scoring_button(batch_score_btn, "📐 全部重新打分", on_success=refresh)

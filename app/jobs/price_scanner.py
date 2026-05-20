@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from app.db.models import get_session, Position, PriceSnapshot, Signal
+from app.db.models import get_session, Position, Watchlist, PriceSnapshot, Signal
 from app.services.futu_client import futu
 from app.services import telegram_bot
-from app.jobs.signal_engine import evaluate, evaluate_watch, should_push
+from app.jobs.signal_engine import evaluate, evaluate_watch, evaluate_watchlist_watch, should_push
 from app.jobs.constants import ACTIONABLE
 from app.config import config
 
@@ -27,16 +27,73 @@ def _compute_weights(positions, snap) -> dict[int, float]:
     return {pid: mv / total for pid, mv in market_values.items()}
 
 
+def _scan_watchlist(session, watchlist, snap, alerts: list) -> None:
+    """Watchlist: watch_below/above + recommended_buy → WATCH_BUY_HINT; 无盈亏/异动/止盈止损。"""
+    for w in watchlist:
+        data = snap.get(w.futu_code)
+        if not data:
+            continue
+        price = data.get("price", 0)
+        if price <= 0:
+            continue
+
+        session.add(PriceSnapshot(
+            symbol=w.symbol,
+            market=w.market,
+            price=price,
+            change_pct=data["change_pct"],
+            volume=data["volume"],
+        ))
+
+        wv = evaluate_watchlist_watch(w, price)
+        if wv:
+            wsig = Signal(
+                symbol=w.symbol,
+                market=w.market,
+                action=wv["action"],
+                price=price,
+                cost_price=0.0,
+                pnl_pct=0.0,
+                reason=wv["reason"],
+            )
+            if should_push(w.symbol, wv["action"]):
+                wsig.pushed = 1
+                alerts.append((w, wv, price, wsig))
+            session.add(wsig)
+
+        if w.recommended_buy and price <= w.recommended_buy:
+            score_txt = f",综合分 {w.composite_score:.0f}" if w.composite_score else ""
+            reason = (
+                f"🤖 跌至系统推荐买入价 {w.recommended_buy:.2f},"
+                f"当前 {price:.2f}{score_txt} — 关注名单,可考虑建仓"
+            )
+            ev = {"action": "WATCH_BUY_HINT", "reason": reason, "pnl_pct": 0.0}
+            hsig = Signal(
+                symbol=w.symbol,
+                market=w.market,
+                action="WATCH_BUY_HINT",
+                price=price,
+                cost_price=0.0,
+                pnl_pct=0.0,
+                reason=reason,
+            )
+            if should_push(w.symbol, "WATCH_BUY_HINT"):
+                hsig.pushed = 1
+                alerts.append((w, ev, price, hsig))
+            session.add(hsig)
+
+
 def scan_once():
-    """单次扫描所有持仓"""
+    """单次扫描持仓 + 关注名单"""
     s = get_session()
     try:
         positions = s.query(Position).all()
-        if not positions:
-            log.info("No positions to scan.")
+        watchlist = s.query(Watchlist).all()
+        codes = list({p.futu_code for p in positions} | {w.futu_code for w in watchlist})
+        if not codes:
+            log.info("No positions or watchlist to scan.")
             return
 
-        codes = list({p.futu_code for p in positions})
         log.info(f"Scanning {len(codes)} symbols...")
         snap = futu.get_snapshot(codes)
         if not snap:
@@ -45,6 +102,7 @@ def scan_once():
 
         weights = _compute_weights(positions, snap)
         alerts = []
+
         for pos in positions:
             data = snap.get(pos.futu_code)
             if not data:
@@ -53,7 +111,6 @@ def scan_once():
             if price <= 0:
                 continue
 
-            # 写价格快照
             s.add(PriceSnapshot(
                 symbol=pos.symbol,
                 market=pos.market,
@@ -62,7 +119,6 @@ def scan_once():
                 volume=data["volume"],
             ))
 
-            # 评估：止损止盈
             ev = evaluate(pos, price, weight=weights.get(pos.id))
             sig = Signal(
                 symbol=pos.symbol,
@@ -78,7 +134,6 @@ def scan_once():
                 alerts.append((pos, ev, price, sig))
             s.add(sig)
 
-            # 日内异动检测
             day_change = data.get("change_pct", 0) or 0
             if abs(day_change) >= config.INTRADAY_MOVE_THRESHOLD:
                 direction = "UP" if day_change > 0 else "DOWN"
@@ -102,7 +157,6 @@ def scan_once():
                     alerts.append((pos, {"action": move_action, "reason": move_reason, "pnl_pct": ev["pnl_pct"]}, price, msig))
                 s.add(msig)
 
-            # 手工兜底 watch_below / watch_above
             wv = evaluate_watch(pos, price)
             if wv:
                 wsig = Signal(
@@ -119,20 +173,24 @@ def scan_once():
                     alerts.append((pos, wv, price, wsig))
                 s.add(wsig)
 
+        _scan_watchlist(s, watchlist, snap, alerts)
+
         s.flush()
         s.commit()
 
-        # 推送告警
-        for pos, ev, price, sig in alerts:
+        for rec, ev, price, sig in alerts:
+            is_watch = isinstance(rec, Watchlist)
+            prefix = "🔭 [关注] " if is_watch else ""
             text = (
-                f"*{pos.market}.{pos.symbol}* {pos.name}\n"
-                f"{ev['reason']}\n"
-                f"持仓 {pos.quantity:g} @ {pos.cost_price:.2f}"
+                f"{prefix}*{rec.market}.{rec.symbol}* {rec.name}\n"
+                f"{ev['reason']}"
             )
+            if not is_watch:
+                text += f"\n持仓 {rec.quantity:g} @ {rec.cost_price:.2f}"
             if ev["action"] in ACTIONABLE and sig.id:
                 text += f"\n📝 用 UI 交易日志记录此次操作 (signal_id={sig.id})"
             telegram_bot.send(text)
-            log.info(f"Pushed alert for {pos.symbol}: {ev['action']}")
+            log.info(f"Pushed alert for {rec.symbol}: {ev['action']}")
 
     except Exception as e:
         log.exception(f"scan_once error: {e}")

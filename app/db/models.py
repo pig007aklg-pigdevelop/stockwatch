@@ -39,6 +39,35 @@ class Position(Base):
         return f"{self.market}.{self.symbol}"
 
 
+class Watchlist(Base):
+    __tablename__ = "watchlist"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    market = Column(String(8), nullable=False)
+    name = Column(String(64), default="")
+
+    watch_below = Column(Float, nullable=True)
+    watch_above = Column(Float, nullable=True)
+
+    composite_score = Column(Float, nullable=True)
+    score_valuation = Column(Float, nullable=True)
+    score_capital = Column(Float, nullable=True)
+    score_technical = Column(Float, nullable=True)
+    score_fundamental = Column(Float, nullable=True)
+    score_news = Column(Float, nullable=True)
+    score_updated_at = Column(DateTime, nullable=True)
+    recommended_buy = Column(Float, nullable=True)
+    recommended_sell = Column(Float, nullable=True)
+
+    notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @property
+    def futu_code(self) -> str:
+        return f"{self.market}.{self.symbol}"
+
+
 class PriceSnapshot(Base):
     __tablename__ = "price_snapshots"
     id = Column(Integer, primary_key=True)

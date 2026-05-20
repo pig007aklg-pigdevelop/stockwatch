@@ -7,4 +7,5 @@ ACTIONABLE = frozenset({
     "AUTO_SELL_HINT",
     "WATCH_BUY",
     "WATCH_SELL",
+    "WATCH_BUY_HINT",
 })

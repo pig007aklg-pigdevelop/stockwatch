@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 from app.config import config
-from app.db.models import get_session, Position, Signal
+from app.db.models import get_session, Position, Watchlist, Signal
 from app.services import scoring, telegram_bot
 from app.services.external_call import (
     INTER_STOCK_SLEEP,
@@ -46,46 +46,53 @@ def _run_daily_scoring_impl() -> None:
     s = get_session()
     try:
         positions = s.query(Position).all()
-        if not positions:
-            log.info("No positions for scoring.")
+        watchlist = s.query(Watchlist).all()
+        all_records = [(p, "POSITION") for p in positions] + [(w, "WATCHLIST") for w in watchlist]
+        if not all_records:
+            log.info("No records for scoring.")
             return
 
-        updated = []
-        for i, pos in enumerate(positions):
+        updated_pos = []
+        updated_watch = []
+        for i, (rec, kind) in enumerate(all_records):
             if i > 0:
                 time.sleep(INTER_STOCK_SLEEP)
 
             result = call_with_timeout(
                 scoring.score_position,
                 SCORE_POSITION_TIMEOUT,
-                pos.market,
-                pos.symbol,
+                rec.market,
+                rec.symbol,
             )
             if result is None:
                 log.warning(
                     "Score skipped %s.%s (timeout or error)",
-                    pos.market,
-                    pos.symbol,
+                    rec.market,
+                    rec.symbol,
                 )
                 continue
             try:
-                scoring.apply_result_to_position(pos, result)
-                updated.append(pos)
+                scoring.apply_result_to_record(rec, result)
+                if kind == "POSITION":
+                    updated_pos.append(rec)
+                else:
+                    updated_watch.append(rec)
                 log.info(
                     "Scored %s.%s composite=%s",
-                    pos.market,
-                    pos.symbol,
+                    rec.market,
+                    rec.symbol,
                     result.composite,
                 )
             except Exception as e:
                 log.warning(
                     "Score apply failed %s.%s: %s",
-                    pos.market,
-                    pos.symbol,
+                    rec.market,
+                    rec.symbol,
                     e,
                 )
 
         s.commit()
+        updated = updated_pos + updated_watch
         if updated:
             _send_top5_report(updated)
             _send_score_alerts(s, updated)
@@ -96,26 +103,30 @@ def _run_daily_scoring_impl() -> None:
         s.close()
 
 
-def _send_top5_report(positions: list) -> None:
+def _record_tag(rec) -> str:
+    return "[关]" if isinstance(rec, Watchlist) else "[持]"
+
+
+def _send_top5_report(records: list) -> None:
     ranked = sorted(
-        [p for p in positions if p.composite_score is not None],
-        key=lambda p: p.composite_score,
+        [r for r in records if r.composite_score is not None],
+        key=lambda r: r.composite_score,
         reverse=True,
     )[:5]
     if not ranked:
         return
     lines = [f"📊 *综合打分 Top5* {datetime.now().strftime('%m-%d')}"]
-    for p in ranked:
-        rb = f"{p.recommended_buy:.2f}" if p.recommended_buy else "-"
-        rs = f"{p.recommended_sell:.2f}" if p.recommended_sell else "-"
+    for r in ranked:
+        rb = f"{r.recommended_buy:.2f}" if r.recommended_buy else "-"
+        rs = f"{r.recommended_sell:.2f}" if r.recommended_sell else "-"
         lines.append(
-            f"• {p.market}.{p.symbol} {p.name or ''} "
-            f"分 *{p.composite_score:.0f}* 买{rb}/卖{rs}"
+            f"• {_record_tag(r)} {r.market}.{r.symbol} {r.name or ''} "
+            f"分 *{r.composite_score:.0f}* 买{rb}/卖{rs}"
         )
     telegram_bot.send("\n".join(lines))
 
 
-def _send_score_alerts(session, positions: list) -> None:
+def _send_score_alerts(session, records: list) -> None:
     """根据综合分推送两类信号:
        - composite >= OPPORTUNITY_THRESHOLD → SCORE_OPPORTUNITY (💎 低估机会)
        - composite <  RISK_THRESHOLD        → SCORE_RISK         (⚠️ 风险警报)
@@ -125,26 +136,34 @@ def _send_score_alerts(session, positions: list) -> None:
     cooldown = timedelta(hours=config.SCORING_ALERT_COOLDOWN_HOURS)
     cutoff = datetime.utcnow() - cooldown
 
-    for pos in positions:
-        if pos.composite_score is None:
+    for rec in records:
+        if rec.composite_score is None:
             continue
 
-        if pos.composite_score >= opp_thr:
+        is_watch = isinstance(rec, Watchlist)
+        cost_price = getattr(rec, "cost_price", None) or 0.0
+
+        if rec.composite_score >= opp_thr:
             action = "SCORE_OPPORTUNITY"
             title = "💎 低估机会"
-            extra = f"建议关注买入价 {pos.recommended_buy:.2f}" if pos.recommended_buy else ""
-        elif pos.composite_score < risk_thr:
+            verb = "建仓" if is_watch else "加仓"
+            extra = (
+                f"建议关注买入价 {rec.recommended_buy:.2f}({verb})"
+                if rec.recommended_buy
+                else ""
+            )
+        elif rec.composite_score < risk_thr:
             action = "SCORE_RISK"
             title = "⚠️ 风险警报"
-            extra = f"建议关注卖出价 {pos.recommended_sell:.2f}" if pos.recommended_sell else ""
+            extra = f"建议关注卖出价 {rec.recommended_sell:.2f}" if rec.recommended_sell else ""
         else:
             continue
 
         recent = (
             session.query(Signal)
             .filter(
-                Signal.symbol == pos.symbol,
-                Signal.market == pos.market,
+                Signal.symbol == rec.symbol,
+                Signal.market == rec.market,
                 Signal.action == action,
                 Signal.created_at >= cutoff,
                 Signal.pushed == 1,
@@ -154,20 +173,21 @@ def _send_score_alerts(session, positions: list) -> None:
         if recent:
             continue
 
+        tag = _record_tag(rec)
         text = (
-            f"{title} {pos.market}.{pos.symbol} {pos.name or ''}\n"
-            f"综合分 _{pos.composite_score:.0f}_  "
-            f"估值{pos.score_valuation or '-'} 基本面{pos.score_fundamental or '-'}\n"
+            f"{title} {tag} {rec.market}.{rec.symbol} {rec.name or ''}\n"
+            f"综合分 _{rec.composite_score:.0f}_  "
+            f"估值{rec.score_valuation or '-'} 基本面{rec.score_fundamental or '-'}\n"
             f"{extra}"
         ).strip()
 
         telegram_bot.send(text)
         sig = Signal(
-            symbol=pos.symbol,
-            market=pos.market,
+            symbol=rec.symbol,
+            market=rec.market,
             action=action,
             price=0.0,
-            cost_price=pos.cost_price,
+            cost_price=cost_price,
             pnl_pct=0.0,
             reason=text,
             pushed=1,

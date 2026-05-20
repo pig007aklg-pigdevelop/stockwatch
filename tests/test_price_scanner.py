@@ -4,7 +4,7 @@ from unittest.mock import patch
 from sqlalchemy.orm import sessionmaker
 
 from app.config import config
-from app.db.models import Position, Signal, PriceSnapshot
+from app.db.models import Position, Watchlist, Signal, PriceSnapshot
 from app.jobs.price_scanner import _compute_weights, scan_once, hourly_summary
 
 
@@ -224,4 +224,79 @@ def test_intraday_move_no_trade_log_hint(session, monkeypatch):
     scan_once()
     assert sent_texts
     assert not any("交易日志" in t for t in sent_texts)
+
+
+def test_watchlist_recommended_buy_triggers_watch_buy_hint(session, monkeypatch):
+    w = Watchlist(symbol="WATCH", market="US", name="W", recommended_buy=50.0)
+    session.add(w)
+    session.commit()
+
+    snap = {w.futu_code: {"price": 48.0, "change_pct": 0.5, "volume": 1}}
+    sent_texts = []
+
+    monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr(
+        "app.jobs.price_scanner.telegram_bot.send",
+        lambda text: sent_texts.append(text) or True,
+    )
+
+    scan_once()
+    sig = session.query(Signal).filter_by(symbol="WATCH", action="WATCH_BUY_HINT").first()
+    assert sig is not None
+    assert any("建仓" in t or "WATCH_BUY_HINT" in str(sent_texts) or "交易日志" in t for t in sent_texts)
+
+
+def test_watchlist_does_not_emit_intraday_move(session, monkeypatch):
+    w = Watchlist(symbol="MOVE", market="US", name="M")
+    session.add(w)
+    session.commit()
+
+    snap = {w.futu_code: {"price": 10.0, "change_pct": 5.0, "volume": 1}}
+
+    monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
+
+    scan_once()
+    assert session.query(Signal).filter_by(symbol="MOVE", action="INTRADAY_MOVE_UP").first() is None
+
+
+def test_watchlist_does_not_emit_stop_loss(session, monkeypatch):
+    w = Watchlist(symbol="SAFE", market="US", name="S", watch_below=5.0)
+    session.add(w)
+    session.commit()
+
+    snap = {w.futu_code: {"price": 100.0, "change_pct": 0.0, "volume": 1}}
+
+    monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
+
+    scan_once()
+    assert session.query(Signal).filter_by(symbol="SAFE", action="STOP_LOSS").first() is None
+
+
+def test_position_and_watchlist_share_snapshot_table(session, monkeypatch):
+    p = Position(symbol="POS", market="US", cost_price=10.0, quantity=1)
+    w = Watchlist(symbol="WL", market="US", name="WL")
+    session.add_all([p, w])
+    session.commit()
+
+    snap = {
+        p.futu_code: {"price": 10.0, "change_pct": 0.0, "volume": 1},
+        w.futu_code: {"price": 20.0, "change_pct": 0.0, "volume": 1},
+    }
+
+    monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
+
+    scan_once()
+    assert session.query(PriceSnapshot).filter_by(symbol="POS").count() >= 1
+    assert session.query(PriceSnapshot).filter_by(symbol="WL").count() >= 1
 

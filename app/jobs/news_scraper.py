@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from time import mktime
 import feedparser
-from app.db.models import get_session, Position, News
+from app.db.models import get_session, Position, Watchlist, News
 from app.services.llm_client import summarize_news
 
 log = logging.getLogger(__name__)
@@ -76,16 +76,17 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
 
 
 def fetch_all():
-    """抓所有持仓的新闻"""
+    """抓所有持仓与关注名单的新闻"""
     s = get_session()
     try:
         positions = s.query(Position).all()
+        watchlist = s.query(Watchlist).all()
     finally:
         s.close()
     total = 0
-    for p in positions:
-        n = fetch_for_symbol(p.symbol, p.market, p.name)
+    for r in list(positions) + list(watchlist):
+        n = fetch_for_symbol(r.symbol, r.market, r.name)
         total += n
-        log.info("News %s: +%d", p.symbol, n)
+        log.info("News %s: +%d", r.symbol, n)
     log.info("Total new news: %d", total)
     return total
