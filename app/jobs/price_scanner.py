@@ -1,10 +1,13 @@
 """价格扫描 + 信号生成 + 推送"""
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 from app.db.models import get_session, Position, PriceSnapshot, Signal
 from app.services.futu_client import futu
 from app.services import telegram_bot
 from app.jobs.signal_engine import evaluate, evaluate_watch, should_push
+from app.config import config
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +77,30 @@ def scan_once():
                 sig.pushed = 1
             s.add(sig)
 
+            # 日内异动检测
+            day_change = data.get("change_pct", 0) or 0
+            if abs(day_change) >= config.INTRADAY_MOVE_THRESHOLD:
+                direction = "UP" if day_change > 0 else "DOWN"
+                move_action = f"INTRADAY_MOVE_{direction}"
+                emoji = "🚀" if direction == "UP" else "📉"
+                move_reason = (
+                    f"{emoji} 日内异动 {day_change:+.2f}%,当前 {price:.2f} "
+                    f"— 关注是否有突发消息"
+                )
+                msig = Signal(
+                    symbol=pos.symbol,
+                    market=pos.market,
+                    action=move_action,
+                    price=price,
+                    cost_price=pos.cost_price,
+                    pnl_pct=ev["pnl_pct"],
+                    reason=move_reason,
+                )
+                if should_push(pos.symbol, move_action):
+                    alerts.append((pos, {"action": move_action, "reason": move_reason, "pnl_pct": ev["pnl_pct"]}, price))
+                    msig.pushed = 1
+                s.add(msig)
+
             # 手工兜底 watch_below / watch_above
             wv = evaluate_watch(pos, price)
             if wv:
@@ -109,15 +136,27 @@ def scan_once():
         s.close()
 
 
-def hourly_summary():
-    """整点摘要"""
+def hourly_summary(market_hint: str | None = None, phase: str = "open"):
+    """
+    market_hint: None=全部, "HK"=仅港股, "US"=仅美股
+    phase: "open" 简短概览 / "close" 加上当日 P&L
+    """
     s = get_session()
     try:
-        positions = s.query(Position).all()
+        q = s.query(Position)
+        if market_hint:
+            q = q.filter(Position.market == market_hint)
+        positions = q.all()
         if not positions:
             return
-        # 拿每只最新价
-        lines = [f"📊 *持仓摘要* {datetime.now().strftime('%m-%d %H:%M')}"]
+        title_map = {
+            ("HK", "open"): "🌅 港股开盘后摘要",
+            ("HK", "close"): "🌇 港股收盘前摘要",
+            ("US", "open"): "🌃 美股开盘后摘要",
+            ("US", "close"): "🌄 美股收盘前摘要",
+        }
+        title = title_map.get((market_hint, phase), "📊 持仓摘要")
+        lines = [f"{title} {datetime.now().strftime('%m-%d %H:%M')}"]
         total_pnl = 0.0
         for pos in positions:
             latest = (
@@ -132,11 +171,18 @@ def hourly_summary():
             pnl_abs = (latest.price - pos.cost_price) * pos.quantity
             total_pnl += pnl_abs
             emoji = "🟢" if pnl_pct >= 0 else "🔴"
-            lines.append(
-                f"{emoji} {pos.market}.{pos.symbol}: {latest.price:.2f} "
-                f"({pnl_pct:+.2f}%) 日{latest.change_pct:+.2f}%"
-            )
-        lines.append(f"\n💰 总浮动盈亏: {total_pnl:+.2f}")
+            if phase == "close":
+                lines.append(
+                    f"{emoji} {pos.market}.{pos.symbol}: {latest.price:.2f} "
+                    f"({pnl_pct:+.2f}%) 日{latest.change_pct:+.2f}%"
+                )
+            else:
+                lines.append(
+                    f"{emoji} {pos.market}.{pos.symbol}: {latest.price:.2f} "
+                    f"({pnl_pct:+.2f}%)"
+                )
+        if phase == "close":
+            lines.append(f"\n💰 总浮动盈亏: {total_pnl:+.2f}")
         telegram_bot.send("\n".join(lines))
     finally:
         s.close()

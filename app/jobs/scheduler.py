@@ -43,9 +43,22 @@ def scan_job():
         scan_once()
 
 
-def summary_job():
-    if config.HOURLY_SUMMARY and (in_hk_session() or in_us_session()):
-        hourly_summary()
+def hk_open_summary_job():
+    if in_hk_session():
+        hourly_summary(market_hint="HK", phase="open")
+
+
+def hk_close_summary_job():
+    hourly_summary(market_hint="HK", phase="close")
+
+
+def us_open_summary_job():
+    if in_us_session():
+        hourly_summary(market_hint="US", phase="open")
+
+
+def us_close_summary_job():
+    hourly_summary(market_hint="US", phase="close")
 
 
 def news_job():
@@ -67,8 +80,36 @@ def build_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone=TZ)
     sched.add_job(scan_job, CronTrigger(minute=f"*/{config.SCAN_INTERVAL}", timezone=TZ),
                   id="scan", max_instances=1, coalesce=True)
-    sched.add_job(summary_job, CronTrigger(minute=0, timezone=TZ),
-                  id="summary", max_instances=1)
+    # 摘要推送：开盘/收盘前各一次（Asia/Shanghai）
+    sched.add_job(
+        hk_open_summary_job,
+        CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone=TZ),
+        id="summary_hk_open",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        hk_close_summary_job,
+        CronTrigger(hour=15, minute=30, day_of_week="mon-fri", timezone=TZ),
+        id="summary_hk_close",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        us_open_summary_job,
+        CronTrigger(hour=22, minute=0, day_of_week="mon-fri", timezone=TZ),
+        id="summary_us_open",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 美股收盘前 04:30 (Asia/Shanghai) 属于次日
+    sched.add_job(
+        us_close_summary_job,
+        CronTrigger(hour=4, minute=30, day_of_week="tue-sat", timezone=TZ),
+        id="summary_us_close",
+        max_instances=1,
+        coalesce=True,
+    )
     sched.add_job(news_job, CronTrigger(minute=f"*/{config.NEWS_INTERVAL}", timezone=TZ),
                   id="news", max_instances=1, coalesce=True)
     # 工作日 06:00 综合打分 (Mon-Fri)

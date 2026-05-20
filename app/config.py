@@ -46,5 +46,8 @@ class Config:
     HEAVY_POSITION_THRESHOLD = float(os.getenv("HEAVY_POSITION_THRESHOLD", "0.30"))
     LIGHT_POSITION_THRESHOLD = float(os.getenv("LIGHT_POSITION_THRESHOLD", "0.10"))
 
+    # Intraday move alert (Phase 4.3)
+    INTRADAY_MOVE_THRESHOLD = float(os.getenv("INTRADAY_MOVE_THRESHOLD", "3.0"))  # 百分比
+
 
 config = Config()
