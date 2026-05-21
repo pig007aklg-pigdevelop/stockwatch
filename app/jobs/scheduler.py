@@ -1,4 +1,6 @@
 """APScheduler 调度配置 - 后台模式(给 NiceGUI 用)"""
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 import pytz
@@ -8,9 +10,12 @@ from app.config import config
 from app.jobs.price_scanner import scan_once, hourly_summary
 from app.jobs.news_scraper import fetch_all as fetch_news_all
 from app.jobs.scoring_job import run_daily_scoring
+from app.jobs.retention_job import run_retention_cleanup
 
 log = logging.getLogger(__name__)
 TZ = pytz.timezone(config.TZ)
+
+_scheduler: BackgroundScheduler | None = None
 
 
 def in_hk_session() -> bool:
@@ -76,8 +81,23 @@ def scoring_job():
         log.exception("scoring_job error: %s", e)
 
 
+def retention_cleanup_job():
+    try:
+        log.info("⏱  Retention cleanup job")
+        result = run_retention_cleanup()
+        log.info("Retention cleanup result: %s", result)
+    except Exception as e:
+        log.exception("retention_cleanup_job error: %s", e)
+
+
+def get_scheduler() -> BackgroundScheduler | None:
+    return _scheduler
+
+
 def build_scheduler() -> BackgroundScheduler:
+    global _scheduler
     sched = BackgroundScheduler(timezone=TZ)
+    _scheduler = sched
     sched.add_job(scan_job, CronTrigger(minute=f"*/{config.SCAN_INTERVAL}", timezone=TZ),
                   id="scan", max_instances=1, coalesce=True)
     # 摘要推送：开盘/收盘前各一次（Asia/Shanghai）
@@ -117,6 +137,13 @@ def build_scheduler() -> BackgroundScheduler:
         scoring_job,
         CronTrigger(day_of_week="mon-fri", hour=6, minute=0, timezone=TZ),
         id="scoring",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        retention_cleanup_job,
+        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=TZ),
+        id="retention_cleanup",
         max_instances=1,
         coalesce=True,
     )

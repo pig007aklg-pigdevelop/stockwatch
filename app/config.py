@@ -56,5 +56,12 @@ class Config:
     HHI_MID_THRESHOLD = float(os.getenv("HHI_MID_THRESHOLD", "0.15"))
     TOP1_WARN_THRESHOLD = float(os.getenv("TOP1_WARN_THRESHOLD", "0.5"))
 
+    # Data retention (P3-2)
+    RETENTION_SIGNALS_DAYS = int(os.getenv("RETENTION_SIGNALS_DAYS", "90"))
+    RETENTION_PRICE_SNAPSHOTS_DAYS = int(os.getenv("RETENTION_PRICE_SNAPSHOTS_DAYS", "90"))
+    RETENTION_NEWS_DAYS = int(os.getenv("RETENTION_NEWS_DAYS", "180"))
+    RETENTION_SCORES_DAYS = int(os.getenv("RETENTION_SCORES_DAYS", "180"))
+    RETENTION_VACUUM = os.getenv("RETENTION_VACUUM", "true").lower() == "true"
+
 
 config = Config()
