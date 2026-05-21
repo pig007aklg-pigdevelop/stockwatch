@@ -302,6 +302,23 @@ def compute_recommended_prices(
     sell = _clamp_to_current_price(current, sell)
     if buy <= 0 or sell <= 0 or np.isnan(buy) or np.isnan(sell):
         return None, None
+
+    # 保证语义合理: 不追高买、不折价卖,且买卖价差有意义
+    buy = min(buy, current * 0.99)
+    sell = max(sell, current * 1.01)
+
+    min_spread = current * 0.05
+    if sell - buy < min_spread:
+        mid = (buy + sell) / 2
+        buy = min(mid - min_spread / 2, current * 0.99)
+        sell = max(mid + min_spread / 2, current * 1.01)
+
+    if dims.valuation is not None and dims.valuation < 30:
+        buy = min(buy, current * 0.92)
+
+    if dims.fundamental is not None and dims.fundamental > 70:
+        sell = max(sell, current * 1.10)
+
     return round(float(buy), 2), round(float(sell), 2)
 
 

@@ -9,7 +9,6 @@ from app.services.scoring import (
     COMPOSITE_FALLBACK,
     CORRECTION_MAX,
     CORRECTION_MIN,
-    PRICE_DEVIATION_MAX,
     DimensionScores,
     NEWS_BASELINE,
     WEIGHTS_HK,
@@ -105,8 +104,94 @@ def test_recommended_prices():
     buy, sell = compute_recommended_prices(bundle, dims)
     assert buy is not None and sell is not None
     current = float(close.iloc[-1])
-    assert current * (1 - PRICE_DEVIATION_MAX) <= buy <= current * (1 + PRICE_DEVIATION_MAX)
-    assert current * (1 - PRICE_DEVIATION_MAX) <= sell <= current * (1 + PRICE_DEVIATION_MAX)
+    assert buy <= current
+    assert sell >= current
+    assert sell - buy >= current * 0.05 - 0.01
+
+
+def _bundle_at_price(current: float) -> market_data.OhlcvBundle:
+    n = 60
+    idx = pd.date_range("2020-01-01", periods=n, freq="B")
+    close = pd.Series(np.full(n, current), index=idx)
+    return market_data.OhlcvBundle(close=close, high=close + 1, low=close - 1)
+
+
+def test_recommended_prices_deep_pullback_invariants(monkeypatch):
+    """buy_base 高、sell_base 低时,修复后仍满足 buy < current < sell。"""
+    current = 100.0
+
+    def fake_levels(_bundle):
+        return {
+            "price": current,
+            "low_20d": 102.0,
+            "high_52w": 200.0,
+            "bb_lower": 101.0,
+            "bb_upper": 95.0,
+        }
+
+    monkeypatch.setattr("app.services.scoring.market_data.technical_levels", fake_levels)
+    dims = DimensionScores(valuation=80, capital=50, technical=50, fundamental=20, news=NEWS_BASELINE)
+    buy, sell = compute_recommended_prices(_bundle_at_price(current), dims)
+    assert buy is not None and sell is not None
+    assert buy < current < sell
+    assert sell - buy >= current * 0.05 - 0.01
+
+
+def test_recommended_prices_min_five_percent_spread(monkeypatch):
+    current = 50.0
+
+    def fake_levels(_bundle):
+        return {
+            "price": current,
+            "low_20d": 50.0,
+            "high_52w": 50.0,
+            "bb_lower": 50.0,
+            "bb_upper": 50.0,
+        }
+
+    monkeypatch.setattr("app.services.scoring.market_data.technical_levels", fake_levels)
+    dims = DimensionScores(50, 50, 50, 50, NEWS_BASELINE)
+    buy, sell = compute_recommended_prices(_bundle_at_price(current), dims)
+    assert buy is not None and sell is not None
+    assert sell - buy >= current * 0.05 - 0.01
+
+
+def test_recommended_prices_low_valuation_more_conservative_buy(monkeypatch):
+    current = 100.0
+
+    def fake_levels(_bundle):
+        return {
+            "price": current,
+            "low_20d": 99.0,
+            "high_52w": 110.0,
+            "bb_lower": 98.0,
+            "bb_upper": 105.0,
+        }
+
+    monkeypatch.setattr("app.services.scoring.market_data.technical_levels", fake_levels)
+    dims = DimensionScores(valuation=20, capital=50, technical=50, fundamental=50, news=NEWS_BASELINE)
+    buy, _ = compute_recommended_prices(_bundle_at_price(current), dims)
+    assert buy is not None
+    assert buy <= current * 0.92 + 0.01
+
+
+def test_recommended_prices_high_fundamental_more_optimistic_sell(monkeypatch):
+    current = 100.0
+
+    def fake_levels(_bundle):
+        return {
+            "price": current,
+            "low_20d": 99.0,
+            "high_52w": 110.0,
+            "bb_lower": 98.0,
+            "bb_upper": 105.0,
+        }
+
+    monkeypatch.setattr("app.services.scoring.market_data.technical_levels", fake_levels)
+    dims = DimensionScores(valuation=50, capital=50, technical=50, fundamental=80, news=NEWS_BASELINE)
+    _, sell = compute_recommended_prices(_bundle_at_price(current), dims)
+    assert sell is not None
+    assert sell >= current * 1.10 - 0.01
 
 
 def test_score_news_baseline_when_empty(monkeypatch):
