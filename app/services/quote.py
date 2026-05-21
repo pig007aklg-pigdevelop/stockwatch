@@ -1,11 +1,10 @@
-"""统一实时报价 — 默认 akshare, 可选 futu。"""
+"""统一实时报价 — 默认 yfinance, 可选 futu / akshare。"""
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime
-
-import pandas as pd
 
 from app.config import config
 from app.services.ticker import normalize_symbol
@@ -13,8 +12,7 @@ from app.services.ticker import normalize_symbol
 log = logging.getLogger(__name__)
 
 _CACHE_TTL_SEC = 30
-_hk_map_cache: tuple[float, dict[str, dict]] | None = None
-_us_map_cache: tuple[float, dict[str, dict]] | None = None
+_snapshot_cache: tuple[float, str, dict[str, dict]] | None = None
 
 
 def _parse_code(futu_code: str) -> tuple[str, str] | None:
@@ -23,6 +21,30 @@ def _parse_code(futu_code: str) -> tuple[str, str] | None:
         return None
     market, symbol = futu_code.split(".", 1)
     return market.upper(), normalize_symbol(market, symbol)
+
+
+def _to_yf_symbol(futu_code: str) -> str | None:
+    """
+    US.BABA → BABA
+    HK.00700 → 0700.HK  (4 位 + .HK, 去前导零后不足 4 位左补零)
+    HK.01810 → 1810.HK
+    """
+    parsed = _parse_code(futu_code)
+    if not parsed:
+        return None
+    market, sym = parsed
+    if market == "US":
+        return sym
+    if market == "HK":
+        digits = "".join(c for c in sym if c.isdigit())
+        core = digits.lstrip("0") or "0"
+        hk4 = core.zfill(4) if len(core) <= 4 else core[-4:]
+        return f"{hk4}.HK"
+    return None
+
+
+def _cache_key(codes: list[str]) -> str:
+    return ",".join(sorted(codes))
 
 
 def _quote_row(price: float, change_pct: float, volume: float) -> dict:
@@ -34,126 +56,178 @@ def _quote_row(price: float, change_pct: float, volume: float) -> dict:
     }
 
 
-def _safe_float(val, default: float = 0.0) -> float:
-    try:
-        v = float(val)
-        if pd.isna(v):
-            return default
-        return v
-    except (TypeError, ValueError):
-        return default
+def _fi_get(fi, *keys: str, default: float | None = None) -> float | None:
+    for key in keys:
+        val = None
+        if hasattr(fi, key):
+            val = getattr(fi, key, None)
+        elif isinstance(fi, dict):
+            val = fi.get(key)
+        else:
+            try:
+                val = fi[key]
+            except (KeyError, TypeError, AttributeError):
+                val = None
+        if val is None:
+            continue
+        try:
+            f = float(val)
+            if math.isnan(f) or math.isinf(f):
+                continue
+            return f
+        except (TypeError, ValueError):
+            continue
+    return default
 
 
-def _load_hk_map() -> dict[str, dict]:
-    """symbol(5位) → quote dict"""
-    global _hk_map_cache
-    now = time.monotonic()
-    if _hk_map_cache and now - _hk_map_cache[0] < _CACHE_TTL_SEC:
-        return _hk_map_cache[1]
-
-    result: dict[str, dict] = {}
-    try:
-        import akshare as ak
-
-        df = ak.stock_hk_spot_em()
-        if df is not None and not df.empty and "代码" in df.columns:
-            for _, row in df.iterrows():
-                sym = normalize_symbol("HK", str(row.get("代码", "")))
-                if not sym:
-                    continue
-                price = _safe_float(row.get("最新价"))
-                if price <= 0:
-                    continue
-                result[sym] = _quote_row(
-                    price,
-                    _safe_float(row.get("涨跌幅")),
-                    _safe_float(row.get("成交量")),
-                )
-    except Exception as e:
-        log.warning("quote fetch HK spot failed: %s", e)
-        return {}
-
-    _hk_map_cache = (now, result)
-    return result
+def _quote_from_fast_info(fi) -> dict | None:
+    price = _fi_get(fi, "lastPrice", "last_price")
+    if not price or price <= 0:
+        return None
+    prev = _fi_get(
+        fi,
+        "regularMarketPreviousClose",
+        "previousClose",
+        "regular_market_previous_close",
+    )
+    if prev and prev > 0:
+        change_pct = (price - prev) / prev * 100
+    else:
+        change_pct = 0.0
+    volume = (
+        _fi_get(fi, "lastVolume", "regularMarketVolume", "regular_market_volume")
+        or 0.0
+    )
+    return _quote_row(price, change_pct, volume)
 
 
-def _load_us_map() -> dict[str, dict]:
-    """symbol → quote dict (从 105.AAPL 解析 ticker)"""
-    global _us_map_cache
-    now = time.monotonic()
-    if _us_map_cache and now - _us_map_cache[0] < _CACHE_TTL_SEC:
-        return _us_map_cache[1]
-
-    result: dict[str, dict] = {}
-    try:
-        import akshare as ak
-
-        df = ak.stock_us_spot_em()
-        if df is not None and not df.empty and "代码" in df.columns:
-            for _, row in df.iterrows():
-                raw_code = str(row.get("代码", ""))
-                sym = raw_code.split(".", 1)[-1].upper() if raw_code else ""
-                if not sym:
-                    continue
-                price = _safe_float(row.get("最新价"))
-                if price <= 0:
-                    continue
-                result[sym] = _quote_row(
-                    price,
-                    _safe_float(row.get("涨跌幅")),
-                    _safe_float(row.get("成交量")),
-                )
-    except Exception as e:
-        log.warning("quote fetch US spot failed: %s", e)
-        return {}
-
-    _us_map_cache = (now, result)
-    return result
-
-
-def _akshare_snapshot(codes: list[str]) -> dict[str, dict]:
+def _yfinance_snapshot(codes: list[str]) -> dict[str, dict]:
+    global _snapshot_cache
     if not codes:
         return {}
 
-    need_hk = any(_parse_code(c) and _parse_code(c)[0] == "HK" for c in codes)
-    need_us = any(_parse_code(c) and _parse_code(c)[0] == "US" for c in codes)
+    key = _cache_key(codes)
+    now = time.monotonic()
+    if (
+        _snapshot_cache
+        and _snapshot_cache[1] == key
+        and now - _snapshot_cache[0] < _CACHE_TTL_SEC
+    ):
+        return _snapshot_cache[2]
 
-    hk_map = _load_hk_map() if need_hk else {}
-    us_map = _load_us_map() if need_us else {}
+    yf_symbols: list[str] = []
+    code_by_yf: dict[str, str] = {}
+    for code in codes:
+        yf_sym = _to_yf_symbol(code)
+        if not yf_sym:
+            log.warning("quote fetch %s failed: invalid code format", code)
+            continue
+        code_by_yf[yf_sym] = code
+        if yf_sym not in yf_symbols:
+            yf_symbols.append(yf_sym)
+
+    if not yf_symbols:
+        return {}
+
+    out: dict[str, dict] = {}
+    try:
+        import yfinance as yf
+
+        tickers = yf.Tickers(" ".join(yf_symbols))
+        for yf_sym, futu_code in code_by_yf.items():
+            try:
+                ticker = tickers.tickers.get(yf_sym)
+                if ticker is None:
+                    log.warning("quote fetch %s failed: yf symbol %s not found", futu_code, yf_sym)
+                    continue
+                row = _quote_from_fast_info(ticker.fast_info)
+                if row:
+                    out[futu_code] = row
+                else:
+                    log.warning("quote fetch %s failed: empty fast_info", futu_code)
+            except Exception as e:
+                log.warning("quote fetch %s failed: %s", futu_code, e)
+    except Exception as e:
+        log.warning("quote yfinance batch failed: %s", e)
+        return {}
+
+    _snapshot_cache = (now, key, out)
+    return out
+
+
+def _akshare_snapshot(codes: list[str]) -> dict[str, dict]:
+    """备用: 东方财富 spot (部分网络环境不可用)。"""
+    import pandas as pd
+
+    if not codes:
+        return {}
+
+    def _safe_float(val, default: float = 0.0) -> float:
+        try:
+            v = float(val)
+            if pd.isna(v):
+                return default
+            return v
+        except (TypeError, ValueError):
+            return default
+
+    hk_map: dict[str, dict] = {}
+    us_map: dict[str, dict] = {}
+    try:
+        import akshare as ak
+
+        need_hk = any(_parse_code(c) and _parse_code(c)[0] == "HK" for c in codes)
+        need_us = any(_parse_code(c) and _parse_code(c)[0] == "US" for c in codes)
+        if need_hk:
+            df = ak.stock_hk_spot_em()
+            if df is not None and not df.empty and "代码" in df.columns:
+                for _, row in df.iterrows():
+                    sym = normalize_symbol("HK", str(row.get("代码", "")))
+                    price = _safe_float(row.get("最新价"))
+                    if sym and price > 0:
+                        hk_map[sym] = _quote_row(
+                            price,
+                            _safe_float(row.get("涨跌幅")),
+                            _safe_float(row.get("成交量")),
+                        )
+        if need_us:
+            df = ak.stock_us_spot_em()
+            if df is not None and not df.empty and "代码" in df.columns:
+                for _, row in df.iterrows():
+                    raw = str(row.get("代码", ""))
+                    sym = raw.split(".", 1)[-1].upper() if raw else ""
+                    price = _safe_float(row.get("最新价"))
+                    if sym and price > 0:
+                        us_map[sym] = _quote_row(
+                            price,
+                            _safe_float(row.get("涨跌幅")),
+                            _safe_float(row.get("成交量")),
+                        )
+    except Exception as e:
+        log.warning("quote akshare batch failed: %s", e)
+        return {}
 
     out: dict[str, dict] = {}
     for code in codes:
         parsed = _parse_code(code)
         if not parsed:
-            log.warning("quote fetch %s failed: invalid code format", code)
             continue
         market, sym = parsed
-        try:
-            if market == "HK":
-                row = hk_map.get(sym)
-            elif market == "US":
-                row = us_map.get(sym)
-            else:
-                log.warning("quote fetch %s failed: unsupported market", code)
-                continue
-            if row:
-                out[code] = row
-            else:
-                log.warning("quote fetch %s failed: symbol not in spot table", code)
-        except Exception as e:
-            log.warning("quote fetch %s failed: %s", code, e)
-
+        row = hk_map.get(sym) if market == "HK" else us_map.get(sym) if market == "US" else None
+        if row:
+            out[code] = row
     return out
 
 
 def snapshot(codes: list[str]) -> dict[str, dict]:
     """
     输入: ["US.BABA", "HK.00700", ...]  (Position.futu_code 格式)
-    输出: { "US.BABA": {"price": 110.2, "change_pct": 1.5, "volume": ..., "ts": datetime} }
+    输出: { "US.BABA": {"price", "change_pct", "volume", "ts"} }
 
-    单只失败跳过; 整体拉取失败返回 {}。
+    单只失败跳过; 批量失败返回 {}。
     """
-    if config.QUOTE_PROVIDER == "futu":
+    provider = config.QUOTE_PROVIDER
+    if provider == "futu":
         from app.services.futu_client import futu
 
         raw = futu.get_snapshot(codes)
@@ -161,11 +235,12 @@ def snapshot(codes: list[str]) -> dict[str, dict]:
         for v in raw.values():
             v.setdefault("ts", ts)
         return raw
-    return _akshare_snapshot(codes)
+    if provider == "akshare":
+        return _akshare_snapshot(codes)
+    return _yfinance_snapshot(codes)
 
 
 def clear_cache() -> None:
     """测试用: 清空模块缓存。"""
-    global _hk_map_cache, _us_map_cache
-    _hk_map_cache = None
-    _us_map_cache = None
+    global _snapshot_cache
+    _snapshot_cache = None

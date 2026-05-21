@@ -63,8 +63,8 @@ class Config:
     RETENTION_SCORES_DAYS = int(os.getenv("RETENTION_SCORES_DAYS", "180"))
     RETENTION_VACUUM = os.getenv("RETENTION_VACUUM", "true").lower() == "true"
 
-    # Quote provider (akshare | futu)
-    QUOTE_PROVIDER = os.getenv("QUOTE_PROVIDER", "akshare").lower()
+    # Quote provider: yfinance | futu | akshare
+    QUOTE_PROVIDER = os.getenv("QUOTE_PROVIDER", "yfinance").lower()
 
     # News whitelist (P4-1)
     NEWS_WHITELIST_ENABLED = os.getenv("NEWS_WHITELIST_ENABLED", "true").lower() == "true"

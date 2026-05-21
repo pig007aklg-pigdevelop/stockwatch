@@ -32,7 +32,7 @@ def main():
         except Exception as e:
             log.warning("Futu not available: %s", e)
     else:
-        log.info("Quote provider: akshare (default)")
+        log.info("Quote provider: yfinance (default)")
 
     sched = build_scheduler()
     sched.start()
