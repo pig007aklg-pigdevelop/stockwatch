@@ -84,7 +84,7 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
                 symbol,
                 stats=stats,
             )
-            row = News(
+            news_obj = News(
                 symbol=symbol,
                 title=title[:500],
                 url=link_truncated,
@@ -97,15 +97,12 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
             )
             try:
                 with s.begin_nested():
-                    s.add(row)
-                    s.flush()
+                    s.add(news_obj)
                 new_count += 1
             except IntegrityError:
-                log.debug(
-                    "news duplicate url skipped symbol=%s url=%s",
-                    symbol,
-                    link_truncated[:80],
-                )
+                if news_obj in s:
+                    s.expunge(news_obj)
+                log.debug("dup url skipped: %s", link_truncated[:60])
                 continue
         s.commit()
     finally:
