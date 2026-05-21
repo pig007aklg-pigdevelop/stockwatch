@@ -67,6 +67,7 @@ def render_header():
         ui.label("📈 StockWatch").classes("text-xl font-bold")
         ui.space()
         ui.link("总览", "/").classes("text-white mx-2")
+        ui.link("📌 今日操作", "/today").classes("text-white mx-2")
         ui.link("持仓", "/positions").classes("text-white mx-2")
         ui.link("关注名单", "/watchlist").classes("text-white mx-2")
         ui.link("新闻", "/news").classes("text-white mx-2")
@@ -692,3 +693,7 @@ def trades_page():
         ui.label("📋 交易记录").classes("text-xl font-bold mt-4")
         refresh()
         ui.button("🔄 刷新", on_click=refresh).props("color=primary")
+
+
+# 注册 /today 等扩展页面路由
+import app.web.pages.today  # noqa: F401, E402
