@@ -24,8 +24,12 @@ def to_akshare_symbol(market: str, symbol: str) -> str | None:
 def to_yfinance_symbol(market: str, symbol: str) -> str:
     sym = normalize_symbol(market, symbol)
     if market == "HK":
-        core = sym.lstrip("0") or "0"
-        return f"{core}.HK"
+        digits = "".join(c for c in sym if c.isdigit())
+        if not digits:
+            return f"{sym}.HK"
+        core = digits.lstrip("0") or "0"
+        hk4 = core.zfill(4) if len(core) <= 4 else core[-4:]
+        return f"{hk4}.HK"
     if market == "US":
         return sym
     if market == "SH":

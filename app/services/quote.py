@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 from app.config import config
-from app.services.ticker import normalize_symbol
+from app.services.ticker import normalize_symbol, to_yfinance_symbol
 
 log = logging.getLogger(__name__)
 
@@ -24,22 +24,13 @@ def _parse_code(futu_code: str) -> tuple[str, str] | None:
 
 
 def _to_yf_symbol(futu_code: str) -> str | None:
-    """
-    US.BABA → BABA
-    HK.00700 → 0700.HK  (4 位 + .HK, 去前导零后不足 4 位左补零)
-    HK.01810 → 1810.HK
-    """
+    """US.BABA → BABA; HK.00700 → 0700.HK — 见 ticker.to_yfinance_symbol。"""
     parsed = _parse_code(futu_code)
     if not parsed:
         return None
     market, sym = parsed
-    if market == "US":
-        return sym
-    if market == "HK":
-        digits = "".join(c for c in sym if c.isdigit())
-        core = digits.lstrip("0") or "0"
-        hk4 = core.zfill(4) if len(core) <= 4 else core[-4:]
-        return f"{hk4}.HK"
+    if market in ("US", "HK"):
+        return to_yfinance_symbol(market, sym)
     return None
 
 

@@ -16,8 +16,20 @@ def test_to_akshare_hk():
     assert to_akshare_symbol("US", "NVDA") is None
 
 
-def test_to_yfinance():
-    assert to_yfinance_symbol("HK", "00700") == "700.HK"
+def test_to_yfinance_hk_four_digit_padded():
+    assert to_yfinance_symbol("HK", "00700") == "0700.HK"
+    assert to_yfinance_symbol("HK", "03690") == "3690.HK"
+    assert to_yfinance_symbol("HK", "09999") == "9999.HK"
+    assert to_yfinance_symbol("HK", "01299") == "1299.HK"
+    assert to_yfinance_symbol("HK", "00005") == "0005.HK"
+    assert to_yfinance_symbol("HK", "01810") == "1810.HK"
+
+
+def test_to_yfinance_hk_truncates_long_codes_to_four_digits():
+    assert to_yfinance_symbol("HK", "0001234") == "1234.HK"
+
+
+def test_to_yfinance_us():
     assert to_yfinance_symbol("US", "nvda") == "NVDA"
 
 
