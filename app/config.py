@@ -63,5 +63,9 @@ class Config:
     RETENTION_SCORES_DAYS = int(os.getenv("RETENTION_SCORES_DAYS", "180"))
     RETENTION_VACUUM = os.getenv("RETENTION_VACUUM", "true").lower() == "true"
 
+    # News whitelist (P4-1)
+    NEWS_WHITELIST_ENABLED = os.getenv("NEWS_WHITELIST_ENABLED", "true").lower() == "true"
+    NEWS_WHITELIST_EXTRA = os.getenv("NEWS_WHITELIST_EXTRA", "")
+
 
 config = Config()
