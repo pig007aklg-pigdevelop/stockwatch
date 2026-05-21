@@ -49,5 +49,12 @@ class Config:
     # Intraday move alert (Phase 4.3)
     INTRADAY_MOVE_THRESHOLD = float(os.getenv("INTRADAY_MOVE_THRESHOLD", "3.0"))  # 百分比
 
+    # Concentration / FX (P3-1)
+    FX_USD_CNY = float(os.getenv("FX_USD_CNY", "7.2"))
+    FX_HKD_CNY = float(os.getenv("FX_HKD_CNY", "0.93"))
+    HHI_HIGH_THRESHOLD = float(os.getenv("HHI_HIGH_THRESHOLD", "0.25"))
+    HHI_MID_THRESHOLD = float(os.getenv("HHI_MID_THRESHOLD", "0.15"))
+    TOP1_WARN_THRESHOLD = float(os.getenv("TOP1_WARN_THRESHOLD", "0.5"))
+
 
 config = Config()
