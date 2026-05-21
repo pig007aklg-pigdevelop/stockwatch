@@ -30,57 +30,135 @@ def _compute_weights(positions, snap) -> dict[int, float]:
 def _scan_watchlist(session, watchlist, snap, alerts: list) -> None:
     """Watchlist: watch_below/above + recommended_buy → WATCH_BUY_HINT; 无盈亏/异动/止盈止损。"""
     for w in watchlist:
-        data = snap.get(w.futu_code)
-        if not data:
-            continue
-        price = data.get("price", 0)
-        if price <= 0:
-            continue
+        try:
+            _scan_watchlist_item(session, w, snap, alerts)
+        except Exception as e:
+            log.warning("scan watchlist %s.%s failed: %s", w.market, w.symbol, e)
 
-        session.add(PriceSnapshot(
+
+def _scan_watchlist_item(session, w, snap, alerts: list) -> None:
+    data = snap.get(w.futu_code)
+    if not data:
+        return
+    price = data.get("price", 0)
+    if price <= 0:
+        return
+
+    session.add(PriceSnapshot(
+        symbol=w.symbol,
+        market=w.market,
+        price=price,
+        change_pct=data["change_pct"],
+        volume=data["volume"],
+    ))
+
+    wv = evaluate_watchlist_watch(w, price)
+    if wv:
+        wsig = Signal(
             symbol=w.symbol,
             market=w.market,
+            action=wv["action"],
             price=price,
-            change_pct=data["change_pct"],
-            volume=data["volume"],
-        ))
+            cost_price=0.0,
+            pnl_pct=0.0,
+            reason=wv["reason"],
+        )
+        if should_push(w.symbol, wv["action"]):
+            wsig.pushed = 1
+            alerts.append((w, wv, price, wsig))
+        session.add(wsig)
 
-        wv = evaluate_watchlist_watch(w, price)
-        if wv:
-            wsig = Signal(
-                symbol=w.symbol,
-                market=w.market,
-                action=wv["action"],
-                price=price,
-                cost_price=0.0,
-                pnl_pct=0.0,
-                reason=wv["reason"],
-            )
-            if should_push(w.symbol, wv["action"]):
-                wsig.pushed = 1
-                alerts.append((w, wv, price, wsig))
-            session.add(wsig)
+    if w.recommended_buy and price <= w.recommended_buy:
+        score_txt = f",综合分 {w.composite_score:.0f}" if w.composite_score else ""
+        reason = (
+            f"🤖 跌至系统推荐买入价 {w.recommended_buy:.2f},"
+            f"当前 {price:.2f}{score_txt} — 关注名单,可考虑建仓"
+        )
+        ev = {"action": "WATCH_BUY_HINT", "reason": reason, "pnl_pct": 0.0}
+        hsig = Signal(
+            symbol=w.symbol,
+            market=w.market,
+            action="WATCH_BUY_HINT",
+            price=price,
+            cost_price=0.0,
+            pnl_pct=0.0,
+            reason=reason,
+        )
+        if should_push(w.symbol, "WATCH_BUY_HINT"):
+            hsig.pushed = 1
+            alerts.append((w, ev, price, hsig))
+        session.add(hsig)
 
-        if w.recommended_buy and price <= w.recommended_buy:
-            score_txt = f",综合分 {w.composite_score:.0f}" if w.composite_score else ""
-            reason = (
-                f"🤖 跌至系统推荐买入价 {w.recommended_buy:.2f},"
-                f"当前 {price:.2f}{score_txt} — 关注名单,可考虑建仓"
-            )
-            ev = {"action": "WATCH_BUY_HINT", "reason": reason, "pnl_pct": 0.0}
-            hsig = Signal(
-                symbol=w.symbol,
-                market=w.market,
-                action="WATCH_BUY_HINT",
-                price=price,
-                cost_price=0.0,
-                pnl_pct=0.0,
-                reason=reason,
-            )
-            if should_push(w.symbol, "WATCH_BUY_HINT"):
-                hsig.pushed = 1
-                alerts.append((w, ev, price, hsig))
-            session.add(hsig)
+
+def _scan_position(session, pos, snap, weight, alerts: list) -> None:
+    data = snap.get(pos.futu_code)
+    if not data:
+        return
+    price = data["price"]
+    if price <= 0:
+        return
+
+    session.add(PriceSnapshot(
+        symbol=pos.symbol,
+        market=pos.market,
+        price=price,
+        change_pct=data["change_pct"],
+        volume=data["volume"],
+    ))
+
+    ev = evaluate(pos, price, weight=weight)
+    sig = Signal(
+        symbol=pos.symbol,
+        market=pos.market,
+        action=ev["action"],
+        price=price,
+        cost_price=pos.cost_price,
+        pnl_pct=ev["pnl_pct"],
+        reason=ev["reason"],
+    )
+    if should_push(pos.symbol, ev["action"]):
+        sig.pushed = 1
+        alerts.append((pos, ev, price, sig))
+    session.add(sig)
+
+    day_change = data.get("change_pct", 0) or 0
+    if abs(day_change) >= config.INTRADAY_MOVE_THRESHOLD:
+        direction = "UP" if day_change > 0 else "DOWN"
+        move_action = f"INTRADAY_MOVE_{direction}"
+        emoji = "🚀" if direction == "UP" else "📉"
+        move_reason = (
+            f"{emoji} 日内异动 {day_change:+.2f}%,当前 {price:.2f} "
+            f"— 关注是否有突发消息"
+        )
+        msig = Signal(
+            symbol=pos.symbol,
+            market=pos.market,
+            action=move_action,
+            price=price,
+            cost_price=pos.cost_price,
+            pnl_pct=ev["pnl_pct"],
+            reason=move_reason,
+        )
+        if should_push(pos.symbol, move_action):
+            msig.pushed = 1
+            alerts.append((pos, {"action": move_action, "reason": move_reason, "pnl_pct": ev["pnl_pct"]}, price, msig))
+        session.add(msig)
+
+    wv = evaluate_watch(pos, price)
+    if wv:
+        wsig = Signal(
+            symbol=pos.symbol,
+            market=pos.market,
+            action=wv["action"],
+            price=price,
+            cost_price=pos.cost_price,
+            pnl_pct=wv["pnl_pct"],
+            reason=wv["reason"],
+        )
+        if should_push(pos.symbol, wv["action"]):
+            wsig.pushed = 1
+            alerts.append((pos, wv, price, wsig))
+        session.add(wsig)
 
 
 def scan_once():
@@ -104,74 +182,10 @@ def scan_once():
         alerts = []
 
         for pos in positions:
-            data = snap.get(pos.futu_code)
-            if not data:
-                continue
-            price = data["price"]
-            if price <= 0:
-                continue
-
-            s.add(PriceSnapshot(
-                symbol=pos.symbol,
-                market=pos.market,
-                price=price,
-                change_pct=data["change_pct"],
-                volume=data["volume"],
-            ))
-
-            ev = evaluate(pos, price, weight=weights.get(pos.id))
-            sig = Signal(
-                symbol=pos.symbol,
-                market=pos.market,
-                action=ev["action"],
-                price=price,
-                cost_price=pos.cost_price,
-                pnl_pct=ev["pnl_pct"],
-                reason=ev["reason"],
-            )
-            if should_push(pos.symbol, ev["action"]):
-                sig.pushed = 1
-                alerts.append((pos, ev, price, sig))
-            s.add(sig)
-
-            day_change = data.get("change_pct", 0) or 0
-            if abs(day_change) >= config.INTRADAY_MOVE_THRESHOLD:
-                direction = "UP" if day_change > 0 else "DOWN"
-                move_action = f"INTRADAY_MOVE_{direction}"
-                emoji = "🚀" if direction == "UP" else "📉"
-                move_reason = (
-                    f"{emoji} 日内异动 {day_change:+.2f}%,当前 {price:.2f} "
-                    f"— 关注是否有突发消息"
-                )
-                msig = Signal(
-                    symbol=pos.symbol,
-                    market=pos.market,
-                    action=move_action,
-                    price=price,
-                    cost_price=pos.cost_price,
-                    pnl_pct=ev["pnl_pct"],
-                    reason=move_reason,
-                )
-                if should_push(pos.symbol, move_action):
-                    msig.pushed = 1
-                    alerts.append((pos, {"action": move_action, "reason": move_reason, "pnl_pct": ev["pnl_pct"]}, price, msig))
-                s.add(msig)
-
-            wv = evaluate_watch(pos, price)
-            if wv:
-                wsig = Signal(
-                    symbol=pos.symbol,
-                    market=pos.market,
-                    action=wv["action"],
-                    price=price,
-                    cost_price=pos.cost_price,
-                    pnl_pct=wv["pnl_pct"],
-                    reason=wv["reason"],
-                )
-                if should_push(pos.symbol, wv["action"]):
-                    wsig.pushed = 1
-                    alerts.append((pos, wv, price, wsig))
-                s.add(wsig)
+            try:
+                _scan_position(s, pos, snap, weights.get(pos.id), alerts)
+            except Exception as e:
+                log.warning("scan position %s.%s failed: %s", pos.market, pos.symbol, e)
 
         _scan_watchlist(s, watchlist, snap, alerts)
 

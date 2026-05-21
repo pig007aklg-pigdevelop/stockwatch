@@ -300,3 +300,33 @@ def test_position_and_watchlist_share_snapshot_table(session, monkeypatch):
     assert session.query(PriceSnapshot).filter_by(symbol="POS").count() >= 1
     assert session.query(PriceSnapshot).filter_by(symbol="WL").count() >= 1
 
+
+def test_scan_once_one_position_error_does_not_block_other(session, monkeypatch):
+    from app.jobs.signal_engine import evaluate as real_evaluate
+
+    good = Position(symbol="GOOD", market="US", cost_price=100.0, quantity=1)
+    bad = Position(symbol="BAD", market="US", cost_price=100.0, quantity=1)
+    session.add_all([good, bad])
+    session.commit()
+
+    snap = {
+        good.futu_code: {"price": 100.0, "change_pct": 0.0, "volume": 1},
+        bad.futu_code: {"price": 100.0, "change_pct": 0.0, "volume": 1},
+    }
+
+    def wrapped_evaluate(pos, price, weight=None):
+        if pos.symbol == "BAD":
+            raise RuntimeError("boom")
+        return real_evaluate(pos, price, weight=weight)
+
+    monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.evaluate", wrapped_evaluate)
+    monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
+
+    scan_once()
+    assert session.query(PriceSnapshot).filter_by(symbol="GOOD").count() >= 1
+    assert session.query(Signal).filter_by(symbol="GOOD").count() >= 1
+    assert session.query(Signal).filter_by(symbol="BAD").count() == 0
+

@@ -31,6 +31,14 @@ def evaluate(pos: Position, price: float, weight: float | None = None) -> dict:
 
     weight: 仓位市值占总持仓市值的比例 (0-1),用于分档兜底阈值
     """
+    if not pos.cost_price or pos.cost_price <= 0:
+        tier = classify_tier(weight)
+        return {
+            "action": "HOLD",
+            "reason": f"当前 {price:.2f},成本无效 — 跳过盈亏计算",
+            "pnl_pct": 0.0,
+            "tier": tier,
+        }
     pnl_pct = (price - pos.cost_price) / pos.cost_price * 100
     tier = classify_tier(weight)
     loss_thr, gain_thr = TIER_THRESHOLDS[tier]
@@ -65,7 +73,9 @@ def evaluate_watch(pos: Position, price: float) -> dict | None:
     手工兜底 + 系统推荐价兜底。
     优先级: watch_below/above (手填) > recommended_buy/sell (系统算)
     """
-    pnl_pct = (price - pos.cost_price) / pos.cost_price * 100 if pos.cost_price else 0
+    if not pos.cost_price or pos.cost_price <= 0:
+        return None
+    pnl_pct = (price - pos.cost_price) / pos.cost_price * 100
 
     if pos.watch_below is not None and price <= pos.watch_below:
         return {

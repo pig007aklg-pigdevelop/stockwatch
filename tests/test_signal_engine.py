@@ -98,3 +98,15 @@ def test_stop_loss_independent_of_tier():
     pos = make_pos(cost_price=100, stop_loss=95)
     r = evaluate(pos, 94, weight=0.5)
     assert r["action"] == "STOP_LOSS"
+
+
+def test_evaluate_zero_cost_returns_hold():
+    pos = make_pos(cost_price=0)
+    r = evaluate(pos, 100.0)
+    assert r["action"] == "HOLD"
+    assert r["pnl_pct"] == 0.0
+
+
+def test_evaluate_watch_zero_cost_returns_none():
+    pos = make_pos(cost_price=0, watch_below=90)
+    assert evaluate_watch(pos, 85) is None
