@@ -8,7 +8,7 @@ from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
 
 from app.config import config
-from app.db.models import Signal, PriceSnapshot, News, engine
+from app.db.models import Signal, PriceSnapshot, News, NewsSentimentCache, engine
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ _TABLE_SPECS = (
     ("price_snapshots", PriceSnapshot, "timestamp", config.RETENTION_PRICE_SNAPSHOTS_DAYS),
     ("news", News, "created_at", config.RETENTION_NEWS_DAYS),
     ("scores", None, "created_at", config.RETENTION_SCORES_DAYS),
+    ("news_sentiment_cache", NewsSentimentCache, "created_at", config.RETENTION_SCORES_DAYS),
 )
 
 

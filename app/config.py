@@ -67,5 +67,8 @@ class Config:
     NEWS_WHITELIST_ENABLED = os.getenv("NEWS_WHITELIST_ENABLED", "true").lower() == "true"
     NEWS_WHITELIST_EXTRA = os.getenv("NEWS_WHITELIST_EXTRA", "")
 
+    # Sentiment LLM cache (P4-1)
+    SENTIMENT_CACHE_ENABLED = os.getenv("SENTIMENT_CACHE_ENABLED", "true").lower() == "true"
+
 
 config = Config()
