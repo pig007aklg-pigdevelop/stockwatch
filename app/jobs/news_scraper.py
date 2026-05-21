@@ -13,14 +13,21 @@ Phase 2 优先级:
 import logging
 from datetime import datetime
 from time import mktime
+
 import feedparser
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.db.models import get_session, Position, Watchlist, News
 from app.services.news_filter import filter_news
 from app.services.sentiment import analyze_news, SentimentBatchStats
 
 log = logging.getLogger(__name__)
+
+URL_MAX_LEN = 1000
+
+
+def _truncate_url(url: str) -> str:
+    return (url or "")[:URL_MAX_LEN]
 
 
 def _yahoo_url(symbol: str) -> str:
@@ -66,7 +73,7 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
     s = get_session()
     try:
         for item in kept_items:
-            link_truncated = (item.get("url") or "")[:1000]
+            link_truncated = _truncate_url(item.get("url"))
             if not link_truncated:
                 continue
             if link_truncated in seen_in_batch:
@@ -77,33 +84,31 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
 
             pub = item.get("published_parsed")
             pub_dt = datetime.fromtimestamp(mktime(pub)) if pub else datetime.utcnow()
-            title = item.get("title", "") or ""
+            title = (item.get("title") or "")[:500]
             analysis = analyze_news(
                 title,
                 item.get("summary", "") or "",
                 symbol,
                 stats=stats,
             )
-            news_obj = News(
-                symbol=symbol,
-                title=title[:500],
-                url=link_truncated,
-                source=item.get("source", ""),
-                summary=analysis.get("summary", title[:200]),
-                sentiment=analysis.get("sentiment", "neutral"),
-                sentiment_type=analysis.get("type", "事实"),
-                sentiment_confidence=analysis.get("confidence"),
-                published_at=pub_dt,
+            stmt = (
+                sqlite_insert(News)
+                .values(
+                    symbol=symbol,
+                    title=title,
+                    url=link_truncated,
+                    source=item.get("source", "") or "",
+                    summary=(analysis.get("summary") or title[:200]),
+                    sentiment=analysis.get("sentiment", "neutral"),
+                    sentiment_type=analysis.get("type", "事实"),
+                    sentiment_confidence=analysis.get("confidence"),
+                    published_at=pub_dt,
+                )
+                .on_conflict_do_nothing(index_elements=["url"])
             )
-            try:
-                with s.begin_nested():
-                    s.add(news_obj)
+            result = s.execute(stmt)
+            if result.rowcount and result.rowcount > 0:
                 new_count += 1
-            except IntegrityError:
-                if news_obj in s:
-                    s.expunge(news_obj)
-                log.debug("dup url skipped: %s", link_truncated[:60])
-                continue
         s.commit()
     finally:
         s.close()
