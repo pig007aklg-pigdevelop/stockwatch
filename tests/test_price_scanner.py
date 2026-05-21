@@ -65,7 +65,7 @@ def test_intraday_move_up_triggers_signal(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
 
     scan_once()
@@ -88,7 +88,7 @@ def test_intraday_move_down_triggers_signal(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
 
     scan_once()
@@ -111,7 +111,7 @@ def test_intraday_move_below_threshold_no_signal(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
 
     scan_once()
@@ -150,7 +150,7 @@ def test_intraday_move_respects_cooldown(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     sent = {"count": 0}
     monkeypatch.setattr(
         "app.jobs.price_scanner.telegram_bot.send",
@@ -194,7 +194,7 @@ def test_actionable_signal_has_trade_log_hint(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr(
         "app.jobs.price_scanner.telegram_bot.send",
         lambda text: sent_texts.append(text) or True,
@@ -215,7 +215,7 @@ def test_intraday_move_no_trade_log_hint(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr(
         "app.jobs.price_scanner.telegram_bot.send",
         lambda text: sent_texts.append(text) or True,
@@ -236,7 +236,7 @@ def test_watchlist_recommended_buy_triggers_watch_buy_hint(session, monkeypatch)
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr(
         "app.jobs.price_scanner.telegram_bot.send",
         lambda text: sent_texts.append(text) or True,
@@ -257,7 +257,7 @@ def test_watchlist_does_not_emit_intraday_move(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
 
     scan_once()
@@ -273,7 +273,7 @@ def test_watchlist_does_not_emit_stop_loss(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
 
     scan_once()
@@ -293,7 +293,7 @@ def test_position_and_watchlist_share_snapshot_table(session, monkeypatch):
 
     monkeypatch.setattr("app.jobs.price_scanner.get_session", _mk_session_factory(session))
     monkeypatch.setattr("app.jobs.signal_engine.get_session", _mk_session_factory(session))
-    monkeypatch.setattr("app.jobs.price_scanner.futu.get_snapshot", lambda codes: snap)
+    monkeypatch.setattr("app.jobs.price_scanner.quote_snapshot", lambda codes: snap)
     monkeypatch.setattr("app.jobs.price_scanner.telegram_bot.send", lambda text: True)
 
     scan_once()

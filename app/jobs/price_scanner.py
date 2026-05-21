@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from app.db.models import get_session, Position, Watchlist, PriceSnapshot, Signal
-from app.services.futu_client import futu
+from app.services.quote import snapshot as quote_snapshot
 from app.services import telegram_bot
 from app.jobs.signal_engine import evaluate, evaluate_watch, evaluate_watchlist_watch, should_push
 from app.jobs.constants import ACTIONABLE
@@ -95,7 +95,7 @@ def scan_once():
             return
 
         log.info(f"Scanning {len(codes)} symbols...")
-        snap = futu.get_snapshot(codes)
+        snap = quote_snapshot(codes)
         if not snap:
             log.warning("Empty snapshot from Futu")
             return

@@ -5,7 +5,6 @@ from nicegui import ui, run, app as nicegui_app
 from sqlalchemy import desc
 from app.db.models import get_session, Position, Watchlist, PriceSnapshot, Signal, News, Trade
 from app.jobs.constants import ACTIONABLE
-from app.services.futu_client import futu
 from app.jobs.price_scanner import scan_once
 from app.jobs.news_scraper import fetch_for_symbol
 from app.jobs.scoring_job import run_daily_scoring

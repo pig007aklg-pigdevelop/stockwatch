@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import config
 from app.db.init_db import init_db
 from app.jobs.scheduler import build_scheduler, get_scheduler
-from app.services.futu_client import futu
 from app import ui  # 注册路由
 from app.web.health import init_version, register_health_routes
 from nicegui import ui as nicegui_ui
@@ -24,11 +23,16 @@ def main():
     init_version()
     register_health_routes(nicegui_app, get_scheduler)
 
-    log.info("Connecting to FutuOpenD (best-effort)...")
-    try:
-        futu.connect()
-    except Exception as e:
-        log.warning("Futu not available: %s", e)
+    if config.QUOTE_PROVIDER == "futu":
+        from app.services.futu_client import futu
+
+        log.info("Connecting to FutuOpenD...")
+        try:
+            futu.connect()
+        except Exception as e:
+            log.warning("Futu not available: %s", e)
+    else:
+        log.info("Quote provider: akshare (default)")
 
     sched = build_scheduler()
     sched.start()
