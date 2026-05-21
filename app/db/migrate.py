@@ -20,6 +20,8 @@ MIGRATION_COLUMNS = [
     ("positions", "recommended_sell", "REAL"),
     ("positions", "last_trade_id", "INTEGER"),
     ("signals", "acted_trade_id", "INTEGER"),
+    ("news", "sentiment_type", "TEXT"),
+    ("news", "sentiment_confidence", "REAL"),
 ]
 
 # 向后兼容

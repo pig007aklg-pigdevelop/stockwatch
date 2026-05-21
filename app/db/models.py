@@ -103,8 +103,20 @@ class News(Base):
     source = Column(String(64))
     summary = Column(Text, default="")
     sentiment = Column(String(16), default="")  # bullish/bearish/neutral
+    sentiment_type = Column(String(8), default="")  # 事实 / 观点
+    sentiment_confidence = Column(Float, nullable=True)
     published_at = Column(DateTime, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NewsSentimentCache(Base):
+    __tablename__ = "news_sentiment_cache"
+    content_hash = Column(String(40), primary_key=True)
+    sentiment = Column(String(16))
+    news_type = Column("type", String(8))
+    confidence = Column(Float)
+    reason = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class Trade(Base):

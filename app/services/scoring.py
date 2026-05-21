@@ -184,7 +184,12 @@ def score_news(symbol: str) -> tuple[float, bool]:
     s = get_session()
     try:
         rows = (
-            s.query(News.sentiment, News.published_at)
+            s.query(
+                News.sentiment,
+                News.sentiment_type,
+                News.sentiment_confidence,
+                News.published_at,
+            )
             .filter(
                 or_(News.symbol == symbol, News.symbol.is_(None)),
                 News.published_at >= cutoff,
@@ -195,17 +200,24 @@ def score_news(symbol: str) -> tuple[float, bool]:
     finally:
         s.close()
 
-    pairs = [(sentiment_to_score(sent), ts) for sent, ts in rows]
-    pairs = [(sc, ts) for sc, ts in pairs if sc is not None and ts is not None]
-    if len(pairs) < NEWS_MIN_COUNT:
-        return NEWS_BASELINE, True
-
     now = datetime.utcnow()
     weighted: list[tuple[float, float]] = []
-    for sc, ts in pairs:
+    for sent, sent_type, conf, ts in rows:
+        sc = sentiment_to_score(sent)
+        if sc is None or ts is None:
+            continue
         age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
-        w = max(0.5, 1.0 - 0.5 * age_days / NEWS_LOOKBACK_DAYS)
-        weighted.append((float(sc), float(w)))
+        age_w = max(0.5, 1.0 - 0.5 * age_days / NEWS_LOOKBACK_DAYS)
+        type_mult = 0.5 if (sent_type or "").strip() == "观点" else 1.0
+        conf_mult = float(conf) if conf is not None else 1.0
+        conf_mult = max(0.0, min(1.0, conf_mult))
+        w = age_w * type_mult * conf_mult
+        if w <= 0:
+            continue
+        weighted.append((float(sc), w))
+
+    if len(weighted) < NEWS_MIN_COUNT:
+        return NEWS_BASELINE, True
 
     total_w = sum(w for _, w in weighted)
     score = (

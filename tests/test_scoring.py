@@ -146,6 +146,69 @@ def test_score_news_bullish_dominant(session, monkeypatch):
     assert sc > 80
 
 
+def test_score_news_opinion_weighted_lower_than_fact(session, monkeypatch):
+    now = datetime.utcnow()
+    session.add_all(
+        [
+            News(
+                symbol="NVDA",
+                title="f1",
+                url=f"uf1{now.timestamp()}",
+                source="x",
+                summary="",
+                sentiment="bullish",
+                sentiment_type="事实",
+                sentiment_confidence=0.9,
+                published_at=now,
+            ),
+            News(
+                symbol="NVDA",
+                title="f2",
+                url=f"uf2{now.timestamp()}",
+                source="x",
+                summary="",
+                sentiment="bullish",
+                sentiment_type="事实",
+                sentiment_confidence=0.9,
+                published_at=now,
+            ),
+            News(
+                symbol="NVDA",
+                title="o1",
+                url=f"uo1{now.timestamp()}",
+                source="x",
+                summary="",
+                sentiment="bearish",
+                sentiment_type="观点",
+                sentiment_confidence=0.9,
+                published_at=now,
+            ),
+        ]
+    )
+    session.commit()
+    monkeypatch.setattr("app.services.scoring.get_session", lambda: session)
+    sc_mixed, _ = score_news("NVDA")
+
+    session.query(News).filter(News.title == "o1").delete()
+    session.commit()
+    session.add(
+        News(
+            symbol="NVDA",
+            title="f3",
+            url=f"uf3{now.timestamp()}",
+            source="x",
+            summary="",
+            sentiment="bullish",
+            sentiment_type="事实",
+            sentiment_confidence=0.9,
+            published_at=now,
+        )
+    )
+    session.commit()
+    sc_all_fact, _ = score_news("NVDA")
+    assert sc_all_fact > sc_mixed
+
+
 def test_score_news_recent_weighted_higher(session, monkeypatch):
     now = datetime.utcnow()
     session.add_all(
