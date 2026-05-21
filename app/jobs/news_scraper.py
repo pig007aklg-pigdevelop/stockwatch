@@ -64,7 +64,8 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
     try:
         for item in kept_items:
             link = item["url"]
-            exists = s.query(News).filter_by(url=link).first()
+            link_truncated = link[:1000]
+            exists = s.query(News).filter_by(url=link_truncated).first()
             if exists:
                 continue
             pub = item.get("published_parsed")
@@ -79,7 +80,7 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
             s.add(News(
                 symbol=symbol,
                 title=title[:500],
-                url=link[:1000],
+                url=link_truncated,
                 source=item.get("source", ""),
                 summary=analysis.get("summary", title[:200]),
                 sentiment=analysis.get("sentiment", "neutral"),
