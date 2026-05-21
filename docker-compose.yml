@@ -14,5 +14,6 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - FUTU_HOST=host.docker.internal  # 连宿主机的 FutuOpenD
+      - NEWS_WHITELIST_EXTRA=finance.yahoo.com,news.yahoo.com,news.google.com
     extra_hosts:
       - "host.docker.internal:host-gateway"
