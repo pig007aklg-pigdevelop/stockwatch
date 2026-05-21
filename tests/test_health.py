@@ -21,18 +21,24 @@ def test_health_ok_returns_200():
     sched = _mock_scheduler(5)
     with patch("app.web.health._check_db", return_value={"ok": True, "latency_ms": 2.0}):
         with patch("app.web.health._check_disk", return_value={"ok": True, "db_size_mb": 1.0, "free_mb": 8000.0}):
-            body, code = build_health_response(sched)
+            with patch(
+                "app.web.health._check_quote",
+                return_value={"ok": True, "provider": "akshare", "sample_price": 110.0},
+            ):
+                body, code = build_health_response(sched)
     assert code == 200
     assert body["status"] == "ok"
     assert body["checks"]["db"]["ok"] is True
     assert body["checks"]["scheduler"]["jobs"] == 5
+    assert body["checks"]["quote"]["ok"] is True
 
 
 def test_health_db_failure_returns_503_down():
     sched = _mock_scheduler(5)
     with patch("app.web.health._check_db", return_value={"ok": False, "latency_ms": None}):
         with patch("app.web.health._check_disk", return_value={"ok": True, "db_size_mb": 1.0, "free_mb": 8000.0}):
-            body, code = build_health_response(sched)
+            with patch("app.web.health._check_quote", return_value={"ok": True, "provider": "akshare"}):
+                body, code = build_health_response(sched)
     assert code == 503
     assert body["status"] == "down"
 
@@ -41,10 +47,25 @@ def test_health_no_scheduler_jobs_returns_degraded():
     sched = _mock_scheduler(0)
     with patch("app.web.health._check_db", return_value={"ok": True, "latency_ms": 1.0}):
         with patch("app.web.health._check_disk", return_value={"ok": True, "db_size_mb": 1.0, "free_mb": 8000.0}):
-            body, code = build_health_response(sched)
+            with patch("app.web.health._check_quote", return_value={"ok": True, "provider": "akshare"}):
+                body, code = build_health_response(sched)
     assert code == 200
     assert body["status"] == "degraded"
     assert body["checks"]["scheduler"]["ok"] is False
+
+
+def test_health_quote_failure_returns_degraded():
+    sched = _mock_scheduler(5)
+    with patch("app.web.health._check_db", return_value={"ok": True, "latency_ms": 1.0}):
+        with patch("app.web.health._check_disk", return_value={"ok": True, "db_size_mb": 1.0, "free_mb": 8000.0}):
+            with patch(
+                "app.web.health._check_quote",
+                return_value={"ok": False, "provider": "akshare", "error": "empty"},
+            ):
+                body, code = build_health_response(sched)
+    assert code == 200
+    assert body["status"] == "degraded"
+    assert body["checks"]["quote"]["ok"] is False
 
 
 @pytest.mark.skipif(

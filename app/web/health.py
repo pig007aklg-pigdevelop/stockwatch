@@ -77,6 +77,28 @@ def _check_scheduler(scheduler) -> dict:
         return {"ok": False, "jobs": 0, "next_run": None}
 
 
+def _check_quote() -> dict:
+    """快速探活: 取 BABA 现价; 失败 → degraded (非 down)。"""
+    try:
+        from app.services.quote import snapshot
+
+        r = snapshot(["US.BABA"])
+        if "US.BABA" in r and r["US.BABA"].get("price", 0) > 0:
+            return {
+                "ok": True,
+                "provider": config.QUOTE_PROVIDER,
+                "sample_price": r["US.BABA"]["price"],
+            }
+        return {"ok": False, "provider": config.QUOTE_PROVIDER, "error": "empty result"}
+    except Exception as e:
+        log.warning("health quote check failed: %s", e)
+        return {
+            "ok": False,
+            "provider": config.QUOTE_PROVIDER,
+            "error": str(e)[:100],
+        }
+
+
 def _check_disk() -> dict:
     try:
         db_path = config.DB_PATH
@@ -98,11 +120,12 @@ def build_health_response(scheduler) -> tuple[dict, int]:
         "db": _check_db(),
         "scheduler": _check_scheduler(scheduler),
         "disk": _check_disk(),
+        "quote": _check_quote(),
     }
 
     if not checks["db"]["ok"]:
         status = "down"
-    elif not checks["scheduler"]["ok"] or not checks["disk"]["ok"]:
+    elif not checks["scheduler"]["ok"] or not checks["disk"]["ok"] or not checks["quote"]["ok"]:
         status = "degraded"
     else:
         status = "ok"
