@@ -5,10 +5,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import config
 from app.db.init_db import init_db
-from app.jobs.scheduler import build_scheduler
+from app.jobs.scheduler import build_scheduler, get_scheduler
 from app.services.futu_client import futu
 from app import ui  # 注册路由
+from app.web.health import init_version, register_health_routes
 from nicegui import ui as nicegui_ui
+from nicegui import app as nicegui_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +21,9 @@ log = logging.getLogger("stockwatch")
 
 def main():
     init_db()
+    init_version()
+    register_health_routes(nicegui_app, get_scheduler)
+
     log.info("Connecting to FutuOpenD (best-effort)...")
     try:
         futu.connect()
