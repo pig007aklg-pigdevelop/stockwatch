@@ -9,6 +9,7 @@ nicegui>=2.0.0
 feedparser>=6.0.10
 openai>=1.40.0
 akshare>=1.14.0
+# 实时报价 app/services/quote.py (默认 QUOTE_PROVIDER=yfinance)
 yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.26.0
