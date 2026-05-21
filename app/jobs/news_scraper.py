@@ -14,6 +14,8 @@ import logging
 from datetime import datetime
 from time import mktime
 import feedparser
+from sqlalchemy.exc import IntegrityError
+
 from app.db.models import get_session, Position, Watchlist, News
 from app.services.news_filter import filter_news
 from app.services.sentiment import analyze_news, SentimentBatchStats
@@ -60,14 +62,19 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
     kept_items, _dropped = filter_news(raw_items)
     stats = SentimentBatchStats()
     new_count = 0
+    seen_in_batch: set[str] = set()
     s = get_session()
     try:
         for item in kept_items:
-            link = item["url"]
-            link_truncated = link[:1000]
-            exists = s.query(News).filter_by(url=link_truncated).first()
-            if exists:
+            link_truncated = (item.get("url") or "")[:1000]
+            if not link_truncated:
                 continue
+            if link_truncated in seen_in_batch:
+                continue
+            if s.query(News).filter_by(url=link_truncated).first():
+                continue
+            seen_in_batch.add(link_truncated)
+
             pub = item.get("published_parsed")
             pub_dt = datetime.fromtimestamp(mktime(pub)) if pub else datetime.utcnow()
             title = item.get("title", "") or ""
@@ -77,7 +84,7 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
                 symbol,
                 stats=stats,
             )
-            s.add(News(
+            row = News(
                 symbol=symbol,
                 title=title[:500],
                 url=link_truncated,
@@ -87,8 +94,19 @@ def fetch_for_symbol(symbol: str, market: str, name: str = "") -> int:
                 sentiment_type=analysis.get("type", "事实"),
                 sentiment_confidence=analysis.get("confidence"),
                 published_at=pub_dt,
-            ))
-            new_count += 1
+            )
+            try:
+                with s.begin_nested():
+                    s.add(row)
+                    s.flush()
+                new_count += 1
+            except IntegrityError:
+                log.debug(
+                    "news duplicate url skipped symbol=%s url=%s",
+                    symbol,
+                    link_truncated[:80],
+                )
+                continue
         s.commit()
     finally:
         s.close()
