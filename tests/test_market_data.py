@@ -14,13 +14,25 @@ def _sample_bundle():
     return market_data.OhlcvBundle(close=close, high=high, low=low)
 
 
+def test_fetch_ohlcv_hk_yfinance_uses_four_digit_symbol():
+    bundle = _sample_bundle()
+    with patch("app.services.market_data._fetch_yfinance_single", return_value=bundle) as yf_mock:
+        with patch("app.services.market_data._fetch_akshare_hk") as ak_mock:
+            result = market_data.fetch_ohlcv("HK", "00700")
+    assert result is bundle
+    yf_mock.assert_called_once_with("0700.HK", 5)
+    ak_mock.assert_not_called()
+
+
 def test_fetch_ohlcv_hk_fallback_to_akshare():
     bundle = _sample_bundle()
-    with patch("app.services.market_data._fetch_yfinance_single", return_value=None):
-        with patch("app.services.market_data._fetch_akshare_hk", return_value=bundle):
+    with patch("app.services.market_data._fetch_yfinance_single", return_value=None) as yf_mock:
+        with patch("app.services.market_data._fetch_akshare_hk", return_value=bundle) as ak_mock:
             result = market_data.fetch_ohlcv("HK", "00883")
     assert result is not None
     assert len(result.close) >= 30
+    yf_mock.assert_called_once_with("0883.HK", 5)
+    ak_mock.assert_called_once_with("00883")
 
 
 def test_recommended_prices_from_hk_bundle():

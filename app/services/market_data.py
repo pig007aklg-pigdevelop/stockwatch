@@ -109,13 +109,11 @@ def fetch_ohlcv(market: str, symbol: str, years: int = 5) -> OhlcvBundle | None:
 
     if mkt == "HK":
         if yfinance_ok:
-            sym5 = normalize_symbol("HK", symbol)
-            core = sym5.lstrip("0") or "0"
-            for yf_sym in (f"{core}.HK", f"{sym5}.HK"):
-                bundle = _fetch_yfinance_single(yf_sym, years)
-                if bundle:
-                    return bundle
-            log.warning("yfinance HK empty for %s, fallback akshare", symbol)
+            yf_sym = to_yfinance_symbol("HK", symbol)
+            bundle = _fetch_yfinance_single(yf_sym, years)
+            if bundle:
+                return bundle
+            log.warning("yfinance HK empty for %s (%s), fallback akshare", symbol, yf_sym)
         return _fetch_akshare_hk(symbol)
 
     if not yfinance_ok:
