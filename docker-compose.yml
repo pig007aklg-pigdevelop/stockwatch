@@ -15,5 +15,8 @@ services:
     environment:
       - FUTU_HOST=host.docker.internal  # 连宿主机的 FutuOpenD
       - NEWS_WHITELIST_EXTRA=finance.yahoo.com,news.yahoo.com,news.google.com
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - OPENAI_MODEL=${OPENAI_MODEL}
     extra_hosts:
       - "host.docker.internal:host-gateway"
