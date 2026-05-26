@@ -15,3 +15,7 @@ pandas>=2.0.0
 numpy>=1.26.0
 pytest>=8.0.0
 pytest-mock>=3.12.0
+# Multi-agent pipeline (app/agents)
+langgraph>=0.2.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
