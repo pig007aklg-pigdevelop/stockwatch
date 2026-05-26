@@ -60,7 +60,7 @@ def _fetch_plate_codes(plate_code: str) -> List[str]:
 def get_hk_tech_constituents() -> List[str]:
     """恒生科技指数成分股，格式 HK.09988。"""
     try:
-        codes = _fetch_plate_codes("HK.HSTECH")
+        codes = _fetch_plate_codes("HK.800700")
         if codes:
             return codes
     except Exception as e:
@@ -72,7 +72,7 @@ def get_hk_tech_constituents() -> List[str]:
 def get_us_nasdaq100_constituents() -> List[str]:
     """NASDAQ100 成分股，格式 US.AAPL。"""
     try:
-        codes = _fetch_plate_codes("US.NASDAQ100")
+        codes = _fetch_plate_codes("US..NDX")
         if codes:
             return codes
     except Exception as e:
