@@ -4,9 +4,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
+
+from langchain_core.messages import HumanMessage
 
 from app.agents.graph import build_graph
+from app.agents.llm import get_llm
+from app.agents.news import fetch_yahoo_rss_news
 from app.agents.state import StockNews
+from app.config import config
 from app.services.futu_client import futu
 
 log = logging.getLogger(__name__)
@@ -18,6 +24,12 @@ def _avg_sentiment(items: list[StockNews]) -> float | None:
     if not items:
         return None
     return sum(n["sentiment"] for n in items) / len(items)
+
+
+def _format_sentiments(scores: list[float]) -> str:
+    if not scores:
+        return "[]"
+    return "[" + ", ".join(f"{s:.2f}" for s in scores) + "]"
 
 
 def _print_results(market: str, result: dict, *, dry_run: bool) -> None:
@@ -35,18 +47,14 @@ def _print_results(market: str, result: dict, *, dry_run: bool) -> None:
 
     for code in candidates:
         items = news.get(code) or []
-        if not items:
-            print(f"  {code}: 0 条新闻")
-            continue
         scores = [n["sentiment"] for n in items]
         avg = _avg_sentiment(items)
-        avg_txt = f"{avg:+.2f}" if avg is not None else "N/A"
-        score_txt = ", ".join(f"{s:+.2f}" for s in scores)
-        print(f"  {code}: {len(items)} 条新闻 | 情绪 [{score_txt}] | 均分 {avg_txt}")
-        for n in items:
-            title = (n.get("title") or "")[:56]
-            print(f"      · {title} ({n['sentiment']:+.2f})")
+        avg_txt = f"{avg:.2f}" if avg is not None else "N/A"
+        print(
+            f"  {code} | {len(items)} 条新闻 | sentiments: {_format_sentiments(scores)} | 均分 {avg_txt}"
+        )
 
+    print("-" * 60)
     print("\n今日大盘观察:\n")
     if market_view:
         print(f"  {market_view}\n")
@@ -54,6 +62,75 @@ def _print_results(market: str, result: dict, *, dry_run: bool) -> None:
         print("  (无输出)\n")
 
     print("=" * 60)
+
+
+def run_check() -> int:
+    print()
+    print("=" * 60)
+    print("StockWatch 连通性自检")
+    print("=" * 60)
+
+    # DeepSeek
+    print("\n[DeepSeek]")
+    api_key = (config.OPENAI_API_KEY or "").strip()
+    if not api_key:
+        print("  状态: FAIL")
+        print("  原因: OPENAI_API_KEY 未配置 (.env)")
+    else:
+        model = (config.OPENAI_MODEL or "").strip() or "(default)"
+        base_url = (config.OPENAI_BASE_URL or "").strip() or "(default)"
+        print(f"  model: {model}")
+        print(f"  base_url: {base_url}")
+        t0 = time.perf_counter()
+        try:
+            llm = get_llm()
+            resp = llm.invoke(
+                [HumanMessage(content='Reply with exactly one word: pong')],
+            )
+            latency_ms = (time.perf_counter() - t0) * 1000
+            text = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+            print(f"  状态: OK")
+            print(f"  延迟: {latency_ms:.0f} ms")
+            print(f"  响应: {text[:120]}")
+        except Exception as e:
+            latency_ms = (time.perf_counter() - t0) * 1000
+            print(f"  状态: FAIL")
+            print(f"  延迟: {latency_ms:.0f} ms")
+            print(f"  错误: {e}")
+
+    # Futu
+    print("\n[Futu OpenD]")
+    try:
+        futu.connect()
+        snap = futu.get_snapshot(["HK.00700"])
+        if snap.get("HK.00700"):
+            row = snap["HK.00700"]
+            print("  状态: OK")
+            print(f"  HK.00700 最新价: {row.get('price')} 涨跌幅: {row.get('change_pct')}%")
+        else:
+            print("  状态: FAIL")
+            print("  原因: get_snapshot 未返回 HK.00700 数据")
+    except Exception as e:
+        print(f"  状态: FAIL")
+        print(f"  错误: {e}")
+    finally:
+        futu.close()
+
+    # Yahoo RSS
+    print("\n[Yahoo RSS]")
+    try:
+        items = fetch_yahoo_rss_news("HK.00700")
+        print("  状态: OK")
+        print(f"  HK.00700 条数: {len(items)}")
+        for i, item in enumerate(items[:3], 1):
+            title = (item.get("title") or "")[:70]
+            print(f"    {i}. {title}")
+    except Exception as e:
+        print(f"  状态: FAIL")
+        print(f"  错误: {e}")
+
+    print("\n" + "=" * 60)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,12 +141,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="不调 DeepSeek,用 mock 数据验证数据流",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="连通性自检 (DeepSeek / Futu / Yahoo RSS),不跑 graph",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.check:
+        return run_check()
 
     initial = {
         "market": args.market,
