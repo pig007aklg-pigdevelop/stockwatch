@@ -6,11 +6,10 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from time import mktime
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin
 
-import requests
-from bs4 import BeautifulSoup
+import feedparser
 from langchain_core.messages import HumanMessage
 
 from app.agents.llm import get_llm
@@ -21,11 +20,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-NEWS_FETCH_TIMEOUT = 30
 YAHOO_FALLBACK_LIMIT = 3
 MAX_NEWS_PER_STOCK = 5
 
@@ -48,16 +42,22 @@ def _parse_futu_code(futu_code: str) -> tuple[str, str] | None:
     return market.upper(), symbol
 
 
-def _yahoo_news_url(futu_code: str) -> str | None:
+def _yahoo_rss_url(futu_code: str) -> str | None:
     parsed = _parse_futu_code(futu_code)
     if not parsed:
         return None
     market, symbol = parsed
     if market == "HK":
         num = symbol.lstrip("0") or "0"
-        return f"https://finance.yahoo.com/quote/{num}.HK/news"
+        return (
+            f"https://feeds.finance.yahoo.com/rss/2.0/headline"
+            f"?s={num}.HK&region=HK&lang=zh-Hant-HK"
+        )
     if market == "US":
-        return f"https://finance.yahoo.com/quote/{symbol}/news"
+        return (
+            f"https://feeds.finance.yahoo.com/rss/2.0/headline"
+            f"?s={symbol}&region=US&lang=en-US"
+        )
     return None
 
 
@@ -70,6 +70,8 @@ def _parse_published_at(raw: str) -> datetime | None:
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
         "%b %d, %Y",
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S %Z",
     ):
         try:
             dt = datetime.strptime(raw.replace("Z", "+0000"), fmt)
@@ -91,71 +93,48 @@ def _within_hours(published_at: str, hours: int) -> bool:
     return dt >= cutoff
 
 
-def _fetch_yahoo_news(futu_code: str) -> list[dict]:
-    url = _yahoo_news_url(futu_code)
+def fetch_yahoo_rss_news(futu_code: str, limit: int = YAHOO_FALLBACK_LIMIT) -> list[dict]:
+    """Yahoo Finance RSS fallback (used by NewsCollector and CLI --check)."""
+    url = _yahoo_rss_url(futu_code)
     if not url:
         return []
     try:
-        resp = requests.get(
+        feed = feedparser.parse(
             url,
-            headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
-            timeout=NEWS_FETCH_TIMEOUT,
+            agent="Mozilla/5.0 (compatible; StockWatch/1.0)",
+            request_headers={"User-Agent": "Mozilla/5.0 (compatible; StockWatch/1.0)"},
         )
-        resp.raise_for_status()
+        if getattr(feed, "bozo", False) and not feed.entries:
+            return []
+
+        items: list[dict] = []
+        for entry in feed.entries[:limit]:
+            title = (entry.get("title") or "").strip()
+            if not title:
+                continue
+            summary = (entry.get("description") or entry.get("summary") or "").strip()
+            published_at = (entry.get("published") or entry.get("pubDate") or "").strip()
+            pub_parsed = entry.get("published_parsed")
+            if pub_parsed:
+                try:
+                    published_at = datetime.fromtimestamp(
+                        mktime(pub_parsed), tz=timezone.utc
+                    ).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    pass
+            items.append(
+                {
+                    "title": title[:500],
+                    "summary": summary[:1500],
+                    "published_at": published_at,
+                    "url": (entry.get("link") or "")[:1000],
+                    "source": "yahoo_rss",
+                }
+            )
+        return items[:limit]
     except Exception as e:
-        log.debug("Yahoo news fetch failed for %s: %s", futu_code, e)
+        log.debug("Yahoo RSS fetch failed for %s: %s", futu_code, e)
         return []
-
-    try:
-        soup = BeautifulSoup(resp.text, "html.parser")
-    except Exception as e:
-        log.debug("Yahoo news parse failed for %s: %s", futu_code, e)
-        return []
-
-    items: list[dict] = []
-    seen_titles: set[str] = set()
-
-    def add_item(title: str, summary: str = "", published_at: str = "", link: str = ""):
-        title = (title or "").strip()
-        if len(title) < 8 or title in seen_titles:
-            return
-        seen_titles.add(title)
-        items.append(
-            {
-                "title": title[:500],
-                "summary": (summary or "")[:1500],
-                "published_at": published_at or "",
-                "url": link or "",
-                "source": "yahoo",
-            }
-        )
-
-    for node in soup.select('[data-testid="storyitem"], li.stream-item, section[data-testid]'):
-        link_el = node.select_one('a[href*="/news/"]') or node.select_one("h3 a") or node.select_one("a")
-        if not link_el:
-            continue
-        title = link_el.get_text(strip=True)
-        href = link_el.get("href") or ""
-        if href and not href.startswith("http"):
-            href = urljoin("https://finance.yahoo.com", href)
-        time_el = node.select_one("time")
-        pub = time_el.get("datetime") or time_el.get_text(strip=True) if time_el else ""
-        snippet_el = node.select_one("p")
-        summary = snippet_el.get_text(strip=True) if snippet_el else ""
-        add_item(title, summary, pub, href)
-        if len(items) >= YAHOO_FALLBACK_LIMIT:
-            break
-
-    if len(items) < YAHOO_FALLBACK_LIMIT:
-        for a in soup.select('a[href*="/news/"]'):
-            href = a.get("href") or ""
-            if not href.startswith("http"):
-                href = urljoin("https://finance.yahoo.com", href)
-            add_item(a.get_text(strip=True), link=href)
-            if len(items) >= YAHOO_FALLBACK_LIMIT:
-                break
-
-    return items[:YAHOO_FALLBACK_LIMIT]
 
 
 def _fetch_futu_news(ctx, futu_code: str) -> list[dict]:
@@ -221,7 +200,7 @@ class NewsCollector:
             log.debug("Futu news unavailable for %s: %s", code, e)
 
         if not items:
-            items = _fetch_yahoo_news(code)
+            items = fetch_yahoo_rss_news(code)
 
         filtered = [n for n in items if _within_hours(n.get("published_at", ""), hours)]
         return filtered[:MAX_NEWS_PER_STOCK]
