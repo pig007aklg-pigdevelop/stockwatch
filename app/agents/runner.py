@@ -43,7 +43,8 @@ def run_agent_pipeline(
         )
         if notify and not dry_run:
             send_pipeline_message(mkt, result)
-        save_agent_picks(mkt, result.get("final_picks") or [])
+        if not dry_run:
+            save_agent_picks(mkt, result.get("final_picks") or [])
         return result
     except Exception as e:
         label = MARKET_LABELS.get(mkt, mkt)

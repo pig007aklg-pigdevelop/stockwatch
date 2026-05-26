@@ -8,9 +8,9 @@ import time
 
 from langchain_core.messages import HumanMessage
 
-from app.agents.graph import build_graph
 from app.agents.llm import get_llm
 from app.agents.news import fetch_yahoo_rss_news
+from app.agents.runner import run_agent_pipeline
 from app.agents.state import StockNews
 from app.config import config
 from app.services.futu_client import futu
@@ -37,6 +37,7 @@ def _print_results(market: str, result: dict, *, dry_run: bool) -> None:
     candidates = result.get("candidates") or []
     news: dict[str, list[StockNews]] = result.get("news") or {}
     market_view = (result.get("market_view") or "").strip()
+    final_picks = result.get("final_picks") or []
 
     mode = "dry-run" if dry_run else "live"
     print()
@@ -60,6 +61,35 @@ def _print_results(market: str, result: dict, *, dry_run: bool) -> None:
         print(f"  {market_view}\n")
     else:
         print("  (无输出)\n")
+
+    print("-" * 60)
+    print(f"\n最终推荐 ({len(final_picks)} 只):\n")
+    if not final_picks:
+        print("  (无)\n")
+    for p in final_picks:
+        rank = p.get("rank", "?")
+        code = p.get("code", "")
+        name = p.get("name") or code
+        score = p.get("score")
+        price = p.get("price")
+        line = f"  {rank}. {name} ({code})"
+        if score is not None:
+            line += f" 分{score:.0f}"
+        print(line)
+        if price is not None:
+            print(f"      现价 {price:.2f}")
+        bl, bh = p.get("buy_range_low"), p.get("buy_range_high")
+        if bl is not None and bh is not None:
+            print(f"      买入 {bl:.2f} ~ {bh:.2f}")
+        if p.get("stop_loss") is not None:
+            print(f"      止损 {p['stop_loss']:.2f}")
+        if p.get("target") is not None:
+            print(f"      目标 {p['target']:.2f}")
+        if p.get("tech_view"):
+            print(f"      技术: {p['tech_view'][:100]}")
+        if p.get("risk_view"):
+            print(f"      风控: {p['risk_view'][:100]}")
+        print()
 
     print("=" * 60)
 
@@ -134,12 +164,17 @@ def run_check() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="StockWatch multi-agent analysis (Stage 1)")
+    parser = argparse.ArgumentParser(description="StockWatch multi-agent analysis")
     parser.add_argument("--market", choices=("hk", "us"), default="hk", help="市场: hk 或 us")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="不调 DeepSeek,用 mock 数据验证数据流",
+        help="不调 DeepSeek(市场/共识用 mock/规则),验证数据流",
+    )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="跑完后发送 Telegram(默认仅打印)",
     )
     parser.add_argument(
         "--check",
@@ -156,22 +191,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         return run_check()
 
-    initial = {
-        "market": args.market,
-        "candidates": [],
-        "news": {},
-        "market_view": "",
-        "trader_picks": [],
-        "risk_assessment": [],
-        "final_picks": [],
-    }
-
     try:
-        futu.connect()
-        graph = build_graph()
-        result = graph.invoke(
-            initial,
-            config={"configurable": {"dry_run": args.dry_run}},
+        result = run_agent_pipeline(
+            args.market,
+            notify=args.notify,
+            dry_run=args.dry_run,
         )
         _print_results(args.market, result, dry_run=args.dry_run)
         return 0
@@ -179,8 +203,6 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("pipeline failed: %s", e)
         print(f"\n错误: {e}\n", file=sys.stderr)
         return 1
-    finally:
-        futu.close()
 
 
 if __name__ == "__main__":

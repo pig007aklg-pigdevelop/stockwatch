@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base, Position, NewsSentimentCache  # noqa: F401 — register models
+from app.db.models import AgentPick, Base, Position, NewsSentimentCache  # noqa: F401 — register models
 from app.db.migrate import run_migrations
 
 
