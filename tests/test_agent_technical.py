@@ -11,7 +11,6 @@ from app.agents.technical import (
     ema_series,
     macd_series,
 )
-from app.services.market_data import OhlcvBundle
 
 
 def _reference_ema(close: np.ndarray, period: int) -> np.ndarray:
@@ -84,11 +83,11 @@ def test_macd_first_valid_dif_at_slow_period_bar():
     assert first_dea == EMA_SLOW - 1 + DEA_PERIOD - 1
 
 
-def test_compute_indicators_bundle_min_bars():
+def test_compute_indicators_min_bars():
     n = 40
     close = pd.Series([10.0 + i * 0.1 for i in range(n)])
-    bundle = OhlcvBundle(close=close, high=close + 0.5, low=close - 0.5)
-    ind = compute_indicators(bundle)
+    klines = pd.DataFrame({"close": close, "high": close + 0.5, "low": close - 0.5})
+    ind = compute_indicators(klines)
     assert ind is not None
     assert ind["price"] == pytest.approx(float(close.iloc[-1]))
     assert ind["dif"] is not None
@@ -98,5 +97,16 @@ def test_compute_indicators_bundle_min_bars():
 
 def test_compute_indicators_rejects_short_series():
     close = pd.Series([10.0] * 20)
-    bundle = OhlcvBundle(close=close, high=close, low=close)
-    assert compute_indicators(bundle) is None
+    klines = pd.DataFrame({"close": close, "high": close, "low": close})
+    assert compute_indicators(klines) is None
+
+
+def test_get_klines_empty_when_futu_fails(monkeypatch):
+    import app.agents.technical as tech
+
+    def _fail_connect():
+        raise RuntimeError("no opend")
+
+    monkeypatch.setattr(tech.futu, "connect", _fail_connect)
+    df = tech.get_klines("HK.00700")
+    assert df.empty

@@ -7,14 +7,54 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from app.services import market_data
-from app.services.market_data import OhlcvBundle
+from app.services.futu_client import futu
 
 log = logging.getLogger(__name__)
 
 EMA_FAST = 12
 EMA_SLOW = 26
 DEA_PERIOD = 9
+KLINE_NUM = 120
+
+try:
+    from futu import KLType, RET_OK
+except ImportError:
+    KLType = None  # type: ignore
+    RET_OK = 0
+
+
+def get_klines(code: str, num: int = KLINE_NUM) -> pd.DataFrame:
+    """Fetch daily K-lines via Futu only. On failure returns empty DataFrame."""
+    if KLType is None:
+        log.warning("get_klines %s: futu-api not installed", code)
+        return pd.DataFrame()
+
+    try:
+        futu.connect()
+        ret, data = futu.ctx.get_cur_kline(code, num=num, ktype=KLType.K_DAY)
+        if ret != RET_OK or data is None or data.empty:
+            log.warning("get_cur_kline failed %s: ret=%s data=%s", code, ret, data)
+            return pd.DataFrame()
+        for col in ("close", "high", "low"):
+            if col not in data.columns:
+                log.warning("get_cur_kline %s: missing column %s", code, col)
+                return pd.DataFrame()
+        sorted_df = (
+            data.sort_values("time_key").reset_index(drop=True)
+            if "time_key" in data.columns
+            else data.reset_index(drop=True)
+        )
+        out = sorted_df[["close", "high", "low"]].copy()
+        out["close"] = pd.to_numeric(out["close"], errors="coerce")
+        out["high"] = pd.to_numeric(out["high"], errors="coerce")
+        out["low"] = pd.to_numeric(out["low"], errors="coerce")
+        out = out.dropna()
+        if out.empty:
+            return pd.DataFrame()
+        return out.reset_index(drop=True)
+    except Exception as e:
+        log.warning("get_cur_kline error %s: %s", code, e)
+        return pd.DataFrame()
 
 
 def ema_series(close: pd.Series, period: int) -> pd.Series:
@@ -61,24 +101,32 @@ def macd_series(
     return dif, dea, hist
 
 
-def _parse_futu_code(futu_code: str) -> tuple[str, str] | None:
-    if "." not in futu_code:
+def rsi(close: pd.Series, period: int = 14) -> float | None:
+    if len(close) < period + 1:
         return None
-    market, symbol = futu_code.split(".", 1)
-    return market.upper(), symbol
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    last_loss = loss.iloc[-1]
+    if pd.isna(last_loss) or last_loss == 0:
+        return 100.0 if not pd.isna(gain.iloc[-1]) else None
+    rs = gain.iloc[-1] / last_loss
+    if pd.isna(rs):
+        return None
+    return float(100 - (100 / (1 + rs)))
 
 
-def compute_indicators(bundle: OhlcvBundle | None) -> dict[str, Any] | None:
-    if bundle is None or len(bundle.close) < EMA_SLOW + DEA_PERIOD:
+def compute_indicators(klines: pd.DataFrame) -> dict[str, Any] | None:
+    if klines is None or klines.empty or len(klines) < EMA_SLOW + DEA_PERIOD:
         return None
 
-    close = bundle.close.reset_index(drop=True)
-    high = bundle.high.reset_index(drop=True)
-    low = bundle.low.reset_index(drop=True)
+    close = klines["close"].reset_index(drop=True)
+    high = klines["high"].reset_index(drop=True)
+    low = klines["low"].reset_index(drop=True)
     price = float(close.iloc[-1])
 
     dif, dea, macd_hist = macd_series(close)
-    rsi_val = market_data.rsi(close)
+    rsi_val = rsi(close)
     ma5 = float(close.rolling(5).mean().iloc[-1]) if len(close) >= 5 else None
     ma10 = float(close.rolling(10).mean().iloc[-1]) if len(close) >= 10 else None
     ma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else None
@@ -140,9 +188,9 @@ def summarize_tech_view(ind: dict[str, Any]) -> str:
         parts.append("MACD金叉(DIF>DEA)")
     else:
         parts.append("MACD偏弱")
-    rsi = ind.get("rsi")
-    if rsi is not None:
-        parts.append(f"RSI{rsi:.0f}")
+    rsi_v = ind.get("rsi")
+    if rsi_v is not None:
+        parts.append(f"RSI{rsi_v:.0f}")
     if ind.get("price_above_ma20"):
         parts.append("站上MA20")
     if ind.get("ma_bull_align"):
@@ -154,16 +202,15 @@ def summarize_tech_view(ind: dict[str, Any]) -> str:
 
 
 def scan_candidates(market: str, codes: list[str]) -> dict[str, dict[str, Any]]:
-    """Fetch OHLCV per futu code and compute indicators."""
+    """Fetch K-lines per futu code via Futu and compute indicators."""
+    _ = market
     result: dict[str, dict[str, Any]] = {}
-    mkt = (market or "hk").lower()
     for code in codes:
-        parsed = _parse_futu_code(code)
-        if not parsed:
+        klines = get_klines(code, num=KLINE_NUM)
+        if klines.empty:
+            log.warning("technical scan skipped %s (empty kline DataFrame)", code)
             continue
-        mkt_code, symbol = parsed
-        bundle = market_data.fetch_ohlcv(mkt_code, symbol)
-        ind = compute_indicators(bundle)
+        ind = compute_indicators(klines)
         if ind:
             ind["tech_view"] = summarize_tech_view(ind)
             result[code] = ind
