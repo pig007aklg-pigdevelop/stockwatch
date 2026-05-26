@@ -11,6 +11,7 @@ from app.agents.market_analyst import market_analyst_node
 from app.agents.news import NewsCollector
 from app.agents.risk_officer import risk_officer_node
 from app.agents.state import AgentState
+from app.agents.technical import scan_candidates
 from app.agents.trader import trader_node
 from app.services.futu_client import futu
 from app.services.index_constituents import (
@@ -46,18 +47,29 @@ def collect_news_node(state: AgentState, config: RunnableConfig) -> dict[str, An
     return {"news": news}
 
 
+def technical_scan_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    _ = config
+    market = (state.get("market") or "hk").lower()
+    candidates = state.get("candidates") or []
+    technical = scan_candidates(market, candidates)
+    log.info("technical_scan: market=%s scanned=%d", market, len(technical))
+    return {"technical": technical}
+
+
 def build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("fetch_candidates", fetch_candidates_node)
     graph.add_node("collect_news", collect_news_node)
+    graph.add_node("technical_scan", technical_scan_node)
     graph.add_node("market_analyst", market_analyst_node)
     graph.add_node("trader", trader_node)
     graph.add_node("risk_officer", risk_officer_node)
 
     graph.set_entry_point("fetch_candidates")
     graph.add_edge("fetch_candidates", "collect_news")
-    graph.add_edge("collect_news", "market_analyst")
+    graph.add_edge("collect_news", "technical_scan")
+    graph.add_edge("technical_scan", "market_analyst")
     graph.add_edge("market_analyst", "trader")
     graph.add_edge("trader", "risk_officer")
     graph.add_edge("risk_officer", END)
