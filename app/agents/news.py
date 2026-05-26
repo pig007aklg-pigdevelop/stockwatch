@@ -49,6 +49,9 @@ def _yahoo_rss_url(futu_code: str) -> str | None:
     market, symbol = parsed
     if market == "HK":
         num = symbol.lstrip("0") or "0"
+        # Yahoo RSS: 700.HK returns empty; 0700.HK works. 4-digit codes (9988) unchanged.
+        if len(num) < 4:
+            num = num.zfill(4)
         return (
             f"https://feeds.finance.yahoo.com/rss/2.0/headline"
             f"?s={num}.HK&region=HK&lang=zh-Hant-HK"
@@ -99,13 +102,7 @@ def fetch_yahoo_rss_news(futu_code: str, limit: int = YAHOO_FALLBACK_LIMIT) -> l
     if not url:
         return []
     try:
-        feed = feedparser.parse(
-            url,
-            agent="Mozilla/5.0 (compatible; StockWatch/1.0)",
-            request_headers={"User-Agent": "Mozilla/5.0 (compatible; StockWatch/1.0)"},
-        )
-        if getattr(feed, "bozo", False) and not feed.entries:
-            return []
+        feed = feedparser.parse(url)
 
         items: list[dict] = []
         for entry in feed.entries[:limit]:
