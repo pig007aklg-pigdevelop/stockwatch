@@ -11,6 +11,7 @@ from app.jobs.price_scanner import scan_once, hourly_summary
 from app.jobs.news_scraper import fetch_all as fetch_news_all
 from app.jobs.scoring_job import run_daily_scoring
 from app.jobs.retention_job import run_retention_cleanup
+from app.jobs.agent_job import run_hk_midday, run_hk_premarket, run_us_premarket
 
 log = logging.getLogger(__name__)
 TZ = pytz.timezone(config.TZ)
@@ -144,6 +145,27 @@ def build_scheduler() -> BackgroundScheduler:
         retention_cleanup_job,
         CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=TZ),
         id="retention_cleanup",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        run_hk_premarket,
+        CronTrigger(hour=8, minute=30, timezone=TZ),
+        id="agent_hk_premarket",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        run_hk_midday,
+        CronTrigger(hour=12, minute=30, timezone=TZ),
+        id="agent_hk_midday",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        run_us_premarket,
+        CronTrigger(hour=21, minute=0, timezone=TZ),
+        id="agent_us_premarket",
         max_instances=1,
         coalesce=True,
     )

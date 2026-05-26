@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
+from app.agents.consensus import consensus_node
 from app.agents.market_analyst import market_analyst_node
 from app.agents.news import NewsCollector
 from app.agents.risk_officer import risk_officer_node
@@ -65,6 +66,7 @@ def build_graph():
     graph.add_node("market_analyst", market_analyst_node)
     graph.add_node("trader", trader_node)
     graph.add_node("risk_officer", risk_officer_node)
+    graph.add_node("consensus", consensus_node)
 
     graph.set_entry_point("fetch_candidates")
     graph.add_edge("fetch_candidates", "collect_news")
@@ -72,6 +74,7 @@ def build_graph():
     graph.add_edge("technical_scan", "market_analyst")
     graph.add_edge("market_analyst", "trader")
     graph.add_edge("trader", "risk_officer")
-    graph.add_edge("risk_officer", END)
+    graph.add_edge("risk_officer", "consensus")
+    graph.add_edge("consensus", END)
 
     return graph.compile()
