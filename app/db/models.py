@@ -119,6 +119,27 @@ class NewsSentimentCache(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class AgentPick(Base):
+    __tablename__ = "agent_picks"
+    id = Column(Integer, primary_key=True)
+    market = Column(String(8), nullable=False, index=True)
+    run_at = Column(DateTime, nullable=False, index=True)
+    rank = Column(Integer, nullable=False)
+    code = Column(String(24), nullable=False, index=True)
+    name = Column(String(64), default="")
+    price = Column(Float, nullable=True)
+    score = Column(Float, nullable=True)
+    buy_range_low = Column(Float, nullable=True)
+    buy_range_high = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    target = Column(Float, nullable=True)
+    tech_view = Column(Text, default="")
+    risk_view = Column(Text, default="")
+    market_view = Column(Text, default="")
+    news_sentiment_avg = Column(Float, nullable=True)
+    raw_json = Column(Text, default="")
+
+
 class Trade(Base):
     __tablename__ = "trades"
     id = Column(Integer, primary_key=True)
