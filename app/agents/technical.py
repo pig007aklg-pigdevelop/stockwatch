@@ -15,6 +15,8 @@ EMA_FAST = 12
 EMA_SLOW = 26
 DEA_PERIOD = 9
 KLINE_NUM = 120
+# Futu history kline: 30 requests / 30 seconds
+HISTORY_KLINE_INTERVAL_SEC = 1.1
 
 try:
     from futu import KLType, RET_OK
@@ -23,37 +25,44 @@ except ImportError:
     RET_OK = 0
 
 
+def _normalize_kline_df(data: pd.DataFrame) -> pd.DataFrame:
+    for col in ("close", "high", "low"):
+        if col not in data.columns:
+            return pd.DataFrame()
+    sorted_df = (
+        data.sort_values("time_key").reset_index(drop=True)
+        if "time_key" in data.columns
+        else data.reset_index(drop=True)
+    )
+    out = sorted_df[["close", "high", "low"]].copy()
+    out["close"] = pd.to_numeric(out["close"], errors="coerce")
+    out["high"] = pd.to_numeric(out["high"], errors="coerce")
+    out["low"] = pd.to_numeric(out["low"], errors="coerce")
+    out = out.dropna()
+    if out.empty:
+        return pd.DataFrame()
+    return out.reset_index(drop=True)
+
+
 def get_klines(code: str, num: int = KLINE_NUM) -> pd.DataFrame:
-    """Fetch daily K-lines via Futu only. On failure returns empty DataFrame."""
+    """Fetch daily K-lines via Futu request_history_kline (no subscription)."""
     if KLType is None:
         log.warning("get_klines %s: futu-api not installed", code)
         return pd.DataFrame()
 
     try:
         futu.connect()
-        ret, data = futu.ctx.get_cur_kline(code, num=num, ktype=KLType.K_DAY)
-        if ret != RET_OK or data is None or data.empty:
-            log.warning("get_cur_kline failed %s: ret=%s data=%s", code, ret, data)
-            return pd.DataFrame()
-        for col in ("close", "high", "low"):
-            if col not in data.columns:
-                log.warning("get_cur_kline %s: missing column %s", code, col)
-                return pd.DataFrame()
-        sorted_df = (
-            data.sort_values("time_key").reset_index(drop=True)
-            if "time_key" in data.columns
-            else data.reset_index(drop=True)
+        ret, data, _page_key = futu.ctx.request_history_kline(
+            code,
+            ktype=KLType.K_DAY,
+            max_count=num,
         )
-        out = sorted_df[["close", "high", "low"]].copy()
-        out["close"] = pd.to_numeric(out["close"], errors="coerce")
-        out["high"] = pd.to_numeric(out["high"], errors="coerce")
-        out["low"] = pd.to_numeric(out["low"], errors="coerce")
-        out = out.dropna()
-        if out.empty:
+        if ret != RET_OK or data is None or data.empty:
+            log.warning("request_history_kline failed %s: ret=%s data=%s", code, ret, data)
             return pd.DataFrame()
-        return out.reset_index(drop=True)
+        return _normalize_kline_df(data)
     except Exception as e:
-        log.warning("get_cur_kline error %s: %s", code, e)
+        log.warning("request_history_kline error %s: %s", code, e)
         return pd.DataFrame()
 
 
@@ -201,11 +210,20 @@ def summarize_tech_view(ind: dict[str, Any]) -> str:
     return "，".join(parts) if parts else "技术面数据不足"
 
 
-def scan_candidates(market: str, codes: list[str]) -> dict[str, dict[str, Any]]:
+def scan_candidates(
+    market: str,
+    codes: list[str],
+    *,
+    rate_limit_sec: float = 0,
+) -> dict[str, dict[str, Any]]:
     """Fetch K-lines per futu code via Futu and compute indicators."""
+    import time
+
     _ = market
     result: dict[str, dict[str, Any]] = {}
-    for code in codes:
+    for i, code in enumerate(codes):
+        if i > 0 and rate_limit_sec > 0:
+            time.sleep(rate_limit_sec)
         klines = get_klines(code, num=KLINE_NUM)
         if klines.empty:
             log.warning("technical scan skipped %s (empty kline DataFrame)", code)

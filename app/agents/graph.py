@@ -12,7 +12,7 @@ from app.agents.market_analyst import market_analyst_node
 from app.agents.news import NewsCollector
 from app.agents.risk_officer import risk_officer_node
 from app.agents.state import AgentState
-from app.agents.technical import scan_candidates
+from app.agents.technical import HISTORY_KLINE_INTERVAL_SEC, scan_candidates
 from app.agents.trader import trader_node
 from app.services.futu_client import futu
 from app.services.index_constituents import (
@@ -52,7 +52,11 @@ def technical_scan_node(state: AgentState, config: RunnableConfig) -> dict[str, 
     _ = config
     market = (state.get("market") or "hk").lower()
     candidates = state.get("candidates") or []
-    technical = scan_candidates(market, candidates)
+    technical = scan_candidates(
+        market,
+        candidates,
+        rate_limit_sec=HISTORY_KLINE_INTERVAL_SEC,
+    )
     log.info("technical_scan: market=%s scanned=%d", market, len(technical))
     return {"technical": technical}
 

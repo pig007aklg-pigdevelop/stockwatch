@@ -110,3 +110,31 @@ def test_get_klines_empty_when_futu_fails(monkeypatch):
     monkeypatch.setattr(tech.futu, "connect", _fail_connect)
     df = tech.get_klines("HK.00700")
     assert df.empty
+
+
+def test_get_klines_uses_request_history_kline(monkeypatch):
+    import app.agents.technical as tech
+
+    n = 40
+    close = [10.0 + i * 0.1 for i in range(n)]
+    raw = pd.DataFrame(
+        {
+            "time_key": [f"2026-01-{i+1:02d}" for i in range(n)],
+            "close": close,
+            "high": [c + 0.5 for c in close],
+            "low": [c - 0.5 for c in close],
+        }
+    )
+    calls: list = []
+
+    class Ctx:
+        def request_history_kline(self, code, **kwargs):
+            calls.append((code, kwargs))
+            return tech.RET_OK, raw, None
+
+    monkeypatch.setattr(tech.futu, "ctx", Ctx())
+    monkeypatch.setattr(tech.futu, "connect", lambda: None)
+    df = tech.get_klines("HK.00700", num=120)
+    assert len(df) == n
+    assert calls[0][0] == "HK.00700"
+    assert calls[0][1]["max_count"] == 120
