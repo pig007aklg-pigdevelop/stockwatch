@@ -40,11 +40,7 @@ def _fetch_plate_codes(plate_code: str) -> List[str]:
         log.warning("futu-api not installed; cannot fetch plate %s", plate_code)
         return []
 
-    futu.connect()
-    if futu.ctx is None:
-        return []
-
-    ret, data = futu.ctx.get_plate_stock(plate_code)
+    ret, data = futu.get_plate_stock(plate_code)
     if ret != RET_OK or data is None or data.empty:
         log.warning("get_plate_stock(%s) failed: %s", plate_code, data)
         return []

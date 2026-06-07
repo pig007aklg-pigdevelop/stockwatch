@@ -51,8 +51,7 @@ def get_klines(code: str, num: int = KLINE_NUM) -> pd.DataFrame:
         return pd.DataFrame()
 
     try:
-        futu.connect()
-        ret, data, _page_key = futu.ctx.request_history_kline(
+        ret, data, _page_key = futu.request_history_kline(
             code,
             ktype=KLType.K_DAY,
             max_count=num,
